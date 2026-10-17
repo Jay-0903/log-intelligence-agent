@@ -158,7 +158,7 @@ def answer_team_lead(question):
         out.append(_provenance(osc))
 
     top_cat = cats["rows"][0]["category"] if cats["rows"] else "the top category"
-    top_team = teams["rows"][0]["team"] if teams["rows"] else "the top team"
+    top_team = tools.team_for_bgl_alert(top_cat) if cats["rows"] else "the top team"
     out += ["",
             f"HYPOTHESIS — '{top_cat}' is the dominant recurring BGL alert; it maps to "
             f"the '{top_team}' team.",
@@ -199,9 +199,7 @@ def answer_manager(question):
     out += ["", "PRIORITIZED ACTIONS (by measured frequency, highest first):"]
     rank = 1
     for row in cats["rows"][:3]:
-        teams = tools.count_bgl_alerts_by_team(limit=50)["rows"]
-        team = next((t["team"] for t in teams
-                     if t.get("alert_events")), "the owning team")
+        team = tools.team_for_bgl_alert(row["category"])
         out.append(f"  {rank}. BGL '{row['category']}' — {row['n']} events. "
                    f"Route to {team}.")
         rank += 1

@@ -61,10 +61,12 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 
 ## Slide 6 — Team Lead & Manager (live)
 
-- Team Lead: whole-corpus recurring categories + owning teams + OpenStack problem
-  rate → route to the owning team, confirm the trend.
-- Manager: ranked by measured frequency, each with an owner; **no invented**
-  downtime / cost / customer impact.
+- Team Lead: whole-corpus counts show KERNDTLB leads (152,734), but
+  **`trend_by_day` reveals 99.6% fell on one day (2005-06-12)** — the real
+  insight. Route to Kernel Platform, but as a one-day incident, not a defect.
+- Manager: ranked by measured frequency, each routed to its **correct** owner
+  (KERN* → Kernel Platform, APP* → Application Runtime); OpenStack nova-api 2.01%
+  error rate. **No invented** downtime / cost / customer impact.
 
 ---
 

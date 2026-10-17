@@ -371,6 +371,41 @@ def openstack_latency_stats():
                      {"metric": "latency_ms"}, sql, rows, None)
 
 
+def bgl_component_for_alert(category):
+    """Map a BGL alert category to its owning COMPONENT.
+
+    BGL alert prefixes encode the component: KERN* -> KERNEL, APP* -> APP,
+    LINK* -> LINKCARD, DISC* -> DISCOVERY, MON* -> MONITOR, etc. This lets us
+    route an alert category to the right team instead of guessing."""
+    if not category:
+        return None
+    c = category.upper()
+    prefix_map = {
+        "KERN": "KERNEL", "APP": "APP", "LINK": "LINKCARD",
+        "DISC": "DISCOVERY", "MON": "MONITOR", "MMCS": "MMCS",
+        "BGL": "BGLMASTER", "CMCS": "CMCS", "HARD": "HARDWARE",
+    }
+    for pre, comp in prefix_map.items():
+        if c.startswith(pre):
+            return comp
+    return None
+
+
+def team_for_bgl_alert(category):
+    """Return the owning team for a BGL alert category via its component and the
+    component_owners table. Falls back to 'the owning team' if unknown."""
+    comp = bgl_component_for_alert(category)
+    if not comp:
+        return "the owning team"
+    try:
+        team = scalar(
+            f"SELECT team FROM {OWNERS_TABLE} "
+            "WHERE dataset = 'BGL' AND component = %s", (comp,))
+        return team or "the owning team"
+    except Exception:
+        return "the owning team"
+
+
 def team_ownership():
     """TOOL (any role): return the supplied component -> team ownership table."""
     sql = f"SELECT dataset, component, team, on_call FROM {OWNERS_TABLE} ORDER BY dataset, component"

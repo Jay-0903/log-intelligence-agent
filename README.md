@@ -181,28 +181,20 @@ ran), `rows`, `count`, `truncated`, `limit`.
 
 ## Worked investigation
 
-*(Run `python agent.py` to reproduce; fill the numbers from your loaded corpus.)*
+A full end-to-end investigation against the **full corpus** (BGL 4,747,963 lines
++ OpenStack 207,820 lines) — with the questions, tool calls, executed queries,
+real results, per-role answers and limitations — is in
+**[`docs/INVESTIGATION.md`](docs/INVESTIGATION.md)**.
 
-**Issue:** recurring kernel memory-translation alerts in BGL.
+Headline finding: the dominant BGL alert `KERNDTLB` (152,734 events) is **not** a
+chronic problem — `trend_by_day` shows **152,182 of them (99.6%) fell on a single
+day, 2005-06-12.** That reframes it from "a recurring defect" to "investigate one
+day's incident," which is the kind of insight the aggregation tools exist to
+surface. Each role uses the same corpus differently (see the table at the end of
+that doc).
 
-1. **Engineer** asks: *"kernel instruction cache parity error"*.
-   - `search_logs_fulltext(dataset="bgl", phrase="kernel instruction cache parity error")`
-     → top BM25 hits on component `KERNEL`, severity `FATAL`.
-   - `get_nearby_events(ts=<hit ts>, window_seconds=60)` → shows what co-occurred on the same node.
-   - **Observed:** the fatal line and its neighbours. **Hypothesis:** symptom localised to `KERNEL` on that node; not a confirmed root cause. **Next step:** widen the window, check the owning team's runbook.
-
-2. **Team lead** asks: *"what alert patterns recur and who owns them?"*.
-   - `alert_categories()` → whole-corpus counts per category (e.g. `KERNDTLB` leads).
-   - `count_alerts_by_team()` → maps the leading category to the **Kernel Platform** team.
-   - `trend_by_day(category="KERNDTLB")` → whether it is rising or steady.
-   - **Next step:** route the top category to its owning team, confirm the trend first.
-
-3. **Manager** asks: *"what should we prioritize?"*.
-   - `alert_categories()` + `openstack_by_component()` → the few highest-frequency problems with their owning teams.
-   - **Output:** a short ranked list by measured frequency, each with an owner and a next action — and an explicit note that these are log-line counts, **not** confirmed incidents or business impact.
-
-Each role selects *different evidence* and ends with a *different action*, not just a
-different length.
+Demo script: [`docs/DEMO.md`](docs/DEMO.md). Slides outline:
+[`docs/SLIDES.md`](docs/SLIDES.md).
 
 ---
 
