@@ -229,7 +229,7 @@ as a one-day incident retrospective (see the trend below).
 
 ## The trend — the recurring pattern is really one day
 
-**Tool call:** `bgl_trend_by_day(category="KERNDTLB", limit=20)`
+**Tool call:** `trend_by_day(category="KERNDTLB", limit=20)`
 **Query:**
 ```sql
 SELECT CAST(to_timestamp(ts) AS DATE) AS day, COUNT(*) AS alert_events
