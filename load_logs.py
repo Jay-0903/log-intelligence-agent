@@ -102,6 +102,12 @@ def load_bgl_bulk(mount_path):
       1. read each line as one column (a delimiter that never appears),
       2. parse the 9 fixed fields + message tail in SQL with regexp_extract.
     Only the parsed table and its index live locally.
+
+    encoding := 'latin-1': the FULL BGL.log contains invalid UTF-8 bytes (the 2k
+    sample does not). Without this, the inverted index build later fails with
+    "Invalid unicode (byte sequence mismatch)" and search silently falls back to
+    LIKE. latin-1 maps every byte 1:1 so no byte sequence is rejected. (SereneDB
+    read_csv supports encoding = utf-8 | utf-16 | latin-1.)
     """
     execute(f"DROP TABLE IF EXISTS {TABLE}")
     execute(f"""
@@ -109,6 +115,7 @@ def load_bgl_bulk(mount_path):
         WITH raw AS (
             SELECT line, row_number() OVER () AS id
             FROM read_csv(%s, delim := e'\\x01', header := false,
+                          encoding := 'latin-1',
                           columns := {{'line': 'VARCHAR'}})
         )
         SELECT

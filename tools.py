@@ -240,7 +240,7 @@ def get_nearby_events_bgl(ts, window_seconds=120, limit=20, node=None):
         "get_nearby_events_bgl",
         f"BGL ({_count(TABLE):,} lines)",
         {"ts": ts, "window_seconds": window_seconds, "node": node},
-        sql, rows, limit)
+        fts.render_sql(sql, params), rows, limit)
 
 
 def search_openstack_fulltext(phrase, limit=15, start=None, end=None):
@@ -294,7 +294,7 @@ def count_bgl_alerts_by_team(limit=20, start=None, end=None):
     return _envelope("count_bgl_alerts_by_team",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"group_by": "team, component", "start": start, "end": end},
-                     sql, rows, limit)
+                     fts.render_sql(sql, tp), rows, limit)
 
 
 def count_bgl_alert_categories(limit=20, start=None, end=None):
@@ -315,7 +315,8 @@ def count_bgl_alert_categories(limit=20, start=None, end=None):
     return _envelope("count_bgl_alert_categories",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"exclude": "alert = '-' (normal)",
-                      "start": start, "end": end}, sql, rows, limit)
+                      "start": start, "end": end},
+                     fts.render_sql(sql, tp), rows, limit)
 
 
 def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
@@ -349,7 +350,8 @@ def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
     return _envelope("bgl_trend_by_day",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"category": category or "any alert",
-                      "start": start, "end": end}, sql, rows, limit)
+                      "start": start, "end": end},
+                     fts.render_sql(sql, params), rows, limit)
 
 
 def bgl_trend_by_week(category=None, limit=60, start=None, end=None):
@@ -386,7 +388,8 @@ def bgl_trend_by_week(category=None, limit=60, start=None, end=None):
     return _envelope("bgl_trend_by_week",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"category": category or "any alert", "bucket": "week",
-                      "start": start, "end": end}, sql, rows, limit)
+                      "start": start, "end": end},
+                     fts.render_sql(sql, params), rows, limit)
 
 
 def _missing_table_env(tool, table):
@@ -449,7 +452,8 @@ def count_openstack_by_component(start=None, end=None):
     return _envelope("count_openstack_by_component",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
                      {"group_by": "component (nova service)",
-                      "start": start, "end": end}, sql, rows, None)
+                      "start": start, "end": end},
+                     fts.render_sql(sql, tp), rows, None)
 
 
 def openstack_latency_stats():
@@ -504,13 +508,15 @@ def openstack_request_trace(request_id, limit=50):
     sql = (f'SELECT id, log_time, ts, level, component, request_id, tenant_id, '
            f'latency_ms, message FROM {OPENSTACK_TABLE} '
            f'WHERE request_id = %s ORDER BY ts, id LIMIT %s')
+    params = (request_id, limit)
     try:
-        rows = query(sql, (request_id, limit))
+        rows = query(sql, params)
     except Exception as e:
         return _query_error_env("openstack_request_trace", OPENSTACK_TABLE, e)
     return _envelope("openstack_request_trace",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
-                     {"request_id": request_id}, sql, rows, limit)
+                     {"request_id": request_id},
+                     fts.render_sql(sql, params), rows, limit)
 
 
 def bgl_alert_profile(limit=8, start=None, end=None):
@@ -570,7 +576,7 @@ def bgl_alert_profile(limit=8, start=None, end=None):
     return _envelope("bgl_alert_profile",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"group_by": "alert", "start": start, "end": end},
-                     sql, rows, limit)
+                     fts.render_sql(sql, tp + tp), rows, limit)
 
 
 # A category is a BURST when nearly all its lines fall on a single day.
@@ -603,11 +609,12 @@ def bgl_top_nodes_for_alert(category, limit=5, start=None, end=None):
         ORDER BY lines DESC, node
         LIMIT {limit}
     """
-    rows = query(sql, [category] + tp)
+    params = [category] + tp
+    rows = query(sql, params)
     return _envelope("bgl_top_nodes_for_alert",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"category": category, "start": start, "end": end},
-                     sql, rows, limit)
+                     fts.render_sql(sql, params), rows, limit)
 
 
 def bgl_component_for_alert(category):
