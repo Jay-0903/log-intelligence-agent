@@ -24,6 +24,8 @@ Return envelope used by all tools:
 
 Load the data first with:  python load_logs.py ...
 """
+import re
+
 from db import TABLE, query, scalar
 import fts
 
@@ -69,6 +71,46 @@ def corpus_scope():
     return out
 
 
+def _table_exists(table):
+    try:
+        _count(table)
+        return True
+    except Exception:
+        return False
+
+
+def _like_fallback(table, cols, phrase, limit, order_by="id"):
+    """Word-wise LIKE search used when the BM25 index is unavailable.
+
+    Splits the phrase into words and ANDs a LIKE per word, keeping only words
+    that actually occur in the column (so an extra word like 'kernel' doesn't
+    zero out a match on 'instruction cache parity error'). Returns (rows, sql).
+    """
+    words = [w for w in re.findall(r"[A-Za-z0-9_.\-]+", phrase.lower())
+             if len(w) > 1]
+    # Keep only words that appear somewhere in the message column.
+    present = []
+    for w in words:
+        try:
+            if _count(table, "LOWER(message) LIKE %s", (f"%{w}%",)) > 0:
+                present.append(w)
+        except Exception:
+            present.append(w)
+    terms = present or words or [phrase.lower()]
+
+    where = " AND ".join("LOWER(message) LIKE %s" for _ in terms)
+    params = [f"%{t}%" for t in terms] + [limit]
+    sql = (f'SELECT {", ".join(cols)} FROM {table} '
+           f'WHERE {where} ORDER BY {order_by} LIMIT %s')
+    rows = query(sql, params)
+    shown = sql
+    for t in terms:
+        shown = shown.replace("%s", repr(f"%{t}%"), 1)
+    shown = shown.replace("%s", str(limit), 1)
+    shown += "   -- [fallback: word-wise LIKE, FTS index unavailable]"
+    return rows, shown
+
+
 # ===========================================================================
 #  ENGINEER TOOLS — full-text search + nearby events
 # ===========================================================================
@@ -84,15 +126,7 @@ def search_bgl_fulltext(phrase, limit=15):
     try:
         rows, sql = fts.search(BGL_IDX, "message", phrase, cols, limit)
     except Exception:
-        # Fallback: substring match, clearly labelled.
-        pattern = f"%{phrase.lower()}%"
-        sql = (f'SELECT {", ".join(cols)} FROM {TABLE} '
-               f'WHERE LOWER(message) LIKE {pattern!r} ORDER BY id LIMIT {limit}')
-        rows = query(
-            f'SELECT {", ".join(cols)} FROM {TABLE} '
-            f'WHERE LOWER(message) LIKE %s ORDER BY id LIMIT %s',
-            (pattern, limit))
-        sql += "   -- [fallback: LIKE, FTS index unavailable]"
+        rows, sql = _like_fallback(TABLE, cols, phrase, limit)
     env = _envelope("search_bgl_fulltext",
                     f"BGL ({_count(TABLE):,} lines)",
                     {"phrase": phrase}, sql, rows, limit)
@@ -118,19 +152,14 @@ def get_nearby_events_bgl(ts, window_seconds=120, limit=20):
 
 def search_openstack_fulltext(phrase, limit=15):
     """TOOL (engineer): full-text BM25 search of OpenStack messages."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("search_openstack_fulltext", OPENSTACK_TABLE)
     cols = ['id', 'log_time', 'level', 'component', 'request_id',
             'tenant_id', 'latency_ms', 'message']
     try:
         rows, sql = fts.search(OPENSTACK_IDX, "message", phrase, cols, limit)
     except Exception:
-        pattern = f"%{phrase.lower()}%"
-        rows = query(
-            f'SELECT {", ".join(cols)} FROM {OPENSTACK_TABLE} '
-            f'WHERE LOWER(message) LIKE %s ORDER BY id LIMIT %s',
-            (pattern, limit))
-        sql = (f'SELECT {", ".join(cols)} FROM {OPENSTACK_TABLE} '
-               f'WHERE LOWER(message) LIKE {pattern!r} LIMIT {limit}'
-               "   -- [fallback: LIKE, FTS index unavailable]")
+        rows, sql = _like_fallback(OPENSTACK_TABLE, cols, phrase, limit)
     return _envelope("search_openstack_fulltext",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
                      {"phrase": phrase}, sql, rows, limit)
@@ -209,16 +238,26 @@ def bgl_trend_by_day(category=None, limit=400):
                      {"category": category or "any alert"}, sql, rows, limit)
 
 
+def _missing_table_env(tool, table):
+    return {
+        "tool": tool, "scope": f"{table} (NOT LOADED)", "filters": {},
+        "query": None, "rows": [], "count": 0, "truncated": False,
+        "limit": None, "note": f"Table '{table}' is not loaded; skipped.",
+    }
+
+
 def count_openstack_by_component():
     """TOOL (team lead/manager): whole-corpus OpenStack counts grouped by nova
     service, with error rate and the owning team."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
     sql = f"""
         SELECT os.component,
                COALESCE(o.team, 'Unmapped') AS team,
                COUNT(*) AS total,
                SUM(os.is_problem) AS problems,
-               ROUND(100.0 * SUM(os.is_problem) / COUNT(*), 2) AS problem_pct,
-               ROUND(AVG(os.latency_ms), 1) AS avg_latency_ms
+               ROUND((100.0 * SUM(os.is_problem) / COUNT(*))::NUMERIC, 2) AS problem_pct,
+               ROUND(AVG(os.latency_ms)::NUMERIC, 1) AS avg_latency_ms
         FROM {OPENSTACK_TABLE} os
         LEFT JOIN {OWNERS_TABLE} o
           ON o.dataset = 'OpenStack' AND o.component = os.component
@@ -234,12 +273,14 @@ def count_openstack_by_component():
 def openstack_latency_stats():
     """TOOL (manager/team lead): request latency distribution per nova service
     over the whole OpenStack corpus (count, avg, p95-ish via max)."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
     sql = f"""
         SELECT component,
                COUNT(latency_ms) AS requests,
-               ROUND(AVG(latency_ms), 1) AS avg_ms,
-               ROUND(MIN(latency_ms), 1) AS min_ms,
-               ROUND(MAX(latency_ms), 1) AS max_ms
+               ROUND(AVG(latency_ms)::NUMERIC, 1) AS avg_ms,
+               ROUND(MIN(latency_ms)::NUMERIC, 1) AS min_ms,
+               ROUND(MAX(latency_ms)::NUMERIC, 1) AS max_ms
         FROM {OPENSTACK_TABLE}
         WHERE latency_ms IS NOT NULL
         GROUP BY component

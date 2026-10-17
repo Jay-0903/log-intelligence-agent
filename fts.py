@@ -29,36 +29,56 @@ DICTIONARY = "english"
 
 
 def ensure_dictionary():
-    """Create the shared text-search dictionary once (idempotent-ish)."""
+    """Create the shared text-search dictionary once (idempotent-ish).
+
+    Returns True on success. Never raises: if the DDL is rejected (e.g. this
+    SereneDB build spells it differently), we warn and let callers fall back
+    to LIKE search instead of crashing the loader.
+    """
     try:
         execute(
             f"CREATE TEXT SEARCH DICTIONARY {DICTIONARY} "
             "AS split_text(case := 'lower') "
             "WITH (frequency, position, offset)"
         )
+        return True
     except Exception as e:
-        # Already exists on a re-run -> fine.
-        if "exist" not in str(e).lower():
-            raise
+        if "exist" in str(e).lower():      # already created on a re-run
+            return True
+        print(f"[warn] full-text dictionary not created ({e}); "
+              "search will fall back to LIKE.")
+        return False
 
 
 def create_inverted_index(index_name, table, key_col, text_cols):
     """Create (or replace) an inverted index over the given text columns.
 
     text_cols: list of column names to index for full-text search; each is
-    registered against the `english` dictionary.
+    registered against the `english` dictionary. Returns True on success;
+    warns and returns False instead of raising.
     """
     cols = ", ".join(f"{c} {DICTIONARY}" for c in text_cols)
-    execute(f"DROP INDEX IF EXISTS {index_name}")
-    execute(
-        f"CREATE INDEX {index_name} ON {table} "
-        f"USING inverted({key_col}, {cols})"
-    )
+    try:
+        execute(f"DROP INDEX IF EXISTS {index_name}")
+        execute(
+            f"CREATE INDEX {index_name} ON {table} "
+            f"USING inverted({key_col}, {cols})"
+        )
+        return True
+    except Exception as e:
+        print(f"[warn] inverted index '{index_name}' on {table} not created "
+              f"({e}); search will fall back to LIKE.")
+        return False
 
 
 def refresh(table):
-    """Make newly indexed rows searchable."""
-    execute(f"VACUUM (REFRESH_TABLE) {table}")
+    """Make newly indexed rows searchable. Warns instead of raising."""
+    try:
+        execute(f"VACUUM (REFRESH_TABLE) {table}")
+        return True
+    except Exception as e:
+        print(f"[warn] VACUUM (REFRESH_TABLE) {table} failed ({e}).")
+        return False
 
 
 def fts_available(index_name):

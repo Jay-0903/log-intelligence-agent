@@ -44,6 +44,11 @@ def _provenance(env):
             f"  [query: {env['query']}]")
 
 
+def _unavailable(env):
+    """True if a tool result refers to a table that is not loaded."""
+    return env.get("query") is None and env.get("note")
+
+
 # ===========================================================================
 #  ENGINEER
 # ===========================================================================
@@ -62,14 +67,20 @@ def answer_engineer(question):
     out = ["ENGINEER — error investigation", ""]
     if dataset == "openstack":
         env = tools.search_openstack_fulltext(phrase, limit=8)
-        out.append(f"OBSERVED — top OpenStack matches for '{phrase}':")
-        out += _fmt_rows(env["rows"],
-                         ["level", "component", "message"], [6, 14, 80])
-        out.append(_provenance(env))
-        out += ["", "HYPOTHESIS — the highest-scoring lines point at the component above.",
-                "NEXT STEP — pull the request_id from a hit and grep nearby lines for "
-                "the same request to see the full request lifecycle."]
-        return "\n".join(out)
+        if _unavailable(env):
+            out.append("OpenStack data is not loaded — "
+                       "falling back to BGL search instead.")
+            dataset = "bgl"
+        else:
+            out.append(f"OBSERVED — top OpenStack matches for '{phrase}':")
+            out += _fmt_rows(env["rows"],
+                             ["level", "component", "message"], [6, 14, 80])
+            out.append(_provenance(env))
+            out += ["", "HYPOTHESIS — the highest-scoring lines point at the "
+                    "component above.",
+                    "NEXT STEP — pull the request_id from a hit and grep nearby "
+                    "lines for the same request to see the full request lifecycle."]
+            return "\n".join(out)
 
     # BGL: full-text search, then nearby events around the top hit.
     env = tools.search_bgl_fulltext(phrase, limit=8)
@@ -118,11 +129,14 @@ def answer_team_lead(question):
     out.append(_provenance(teams))
 
     osc = tools.count_openstack_by_component()
-    out += ["", "OBSERVED — OpenStack problem rate by nova service, whole corpus:"]
-    out += _fmt_rows(osc["rows"],
-                     ["component", "team", "total", "problems", "problem_pct"],
-                     [16, 14, 8, 9, 11])
-    out.append(_provenance(osc))
+    if _unavailable(osc):
+        out += ["", "OpenStack not loaded — skipping its problem-rate section."]
+    else:
+        out += ["", "OBSERVED — OpenStack problem rate by nova service, whole corpus:"]
+        out += _fmt_rows(osc["rows"],
+                         ["component", "team", "total", "problems", "problem_pct"],
+                         [16, 14, 8, 9, 11])
+        out.append(_provenance(osc))
 
     top_cat = cats["rows"][0]["category"] if cats["rows"] else "the top category"
     top_team = teams["rows"][0]["team"] if teams["rows"] else "the top team"
@@ -144,18 +158,24 @@ def answer_manager(question):
 
     cats = tools.count_bgl_alert_categories(limit=5)
     scope = tools.corpus_scope()
-    out.append(f"DATA SCOPE — BGL: {scope.get('BGL')} lines; "
-               f"OpenStack: {scope.get('OpenStack')} lines (whole corpus).")
+    bgl_n = scope.get("BGL")
+    os_n = scope.get("OpenStack")
+    os_txt = f"{os_n} lines" if os_n else "not loaded"
+    out.append(f"DATA SCOPE — BGL: {bgl_n} lines; OpenStack: {os_txt} "
+               "(whole corpus).")
     out += ["", "OBSERVED — most frequent BGL alert categories:"]
     out += _fmt_rows(cats["rows"], ["category", "n"], [16, 10])
     out.append(_provenance(cats))
 
     osc = tools.count_openstack_by_component()
-    out += ["", "OBSERVED — OpenStack services ranked by problem count:"]
-    out += _fmt_rows(osc["rows"],
-                     ["component", "team", "problems", "problem_pct"],
-                     [16, 14, 9, 11])
-    out.append(_provenance(osc))
+    if _unavailable(osc):
+        out += ["", "OpenStack not loaded — prioritization uses BGL only."]
+    else:
+        out += ["", "OBSERVED — OpenStack services ranked by problem count:"]
+        out += _fmt_rows(osc["rows"],
+                         ["component", "team", "problems", "problem_pct"],
+                         [16, 14, 9, 11])
+        out.append(_provenance(osc))
 
     out += ["", "PRIORITIZED ACTIONS (by measured frequency, highest first):"]
     rank = 1
@@ -166,11 +186,13 @@ def answer_manager(question):
         out.append(f"  {rank}. BGL '{row['category']}' — {row['n']} events. "
                    f"Route to {team}.")
         rank += 1
-    for row in osc["rows"][:2]:
-        if row.get("problems"):
-            out.append(f"  {rank}. OpenStack {row['component']} — {row['problems']} "
-                       f"problem lines ({row['problem_pct']}%). Owner: {row['team']}.")
-            rank += 1
+    if not _unavailable(osc):
+        for row in osc["rows"][:2]:
+            if row.get("problems"):
+                out.append(f"  {rank}. OpenStack {row['component']} — "
+                           f"{row['problems']} problem lines "
+                           f"({row['problem_pct']}%). Owner: {row['team']}.")
+                rank += 1
 
     out += ["",
             "NOTE — these are counts of matching log lines, not confirmed incidents, "

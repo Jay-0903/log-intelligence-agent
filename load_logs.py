@@ -168,7 +168,7 @@ def load_openstack(cur, log_paths):
         CREATE TABLE {OPENSTACK_TABLE} (
             id INTEGER, log_time TEXT, ts BIGINT, pid INTEGER, level TEXT,
             component TEXT, request_id TEXT, tenant_id TEXT,
-            latency_ms DOUBLE, is_problem INTEGER, message TEXT, raw TEXT
+            latency_ms DOUBLE PRECISION, is_problem INTEGER, message TEXT, raw TEXT
         )
     """)
     insert = f"""INSERT INTO {OPENSTACK_TABLE}
