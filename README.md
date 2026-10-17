@@ -160,6 +160,14 @@ Claude Desktop / Claude Code config (`claude_desktop_config.json`):
 }
 ```
 
+> **Microsoft Store Claude Desktop:** if you installed Claude Desktop from the
+> Microsoft Store, the config file is at
+> `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`.
+> Easiest is to edit it via **Settings → Developer → Edit config**. After any
+> change, **fully quit Claude (system tray → Quit)** before reopening — a window
+> close alone does not reload the config. (Also restart Claude after reloading
+> data into SereneDB, so the MCP server reconnects to the fresh tables.)
+
 > **Use the full path to `python` on Windows.** `"command": "python"` often
 > fails to resolve from Claude Desktop. Use the absolute interpreter path, e.g.
 > `"command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python314\\python.exe"`.
