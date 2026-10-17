@@ -363,7 +363,20 @@ def main():
                          "read_csv, e.g. /data/BGL.log (needs the folder mounted "
                          'into the container: -v "$PWD/data":/data). Fastest for '
                          "the full 4.7M-line corpus.")
+    ap.add_argument("--otel-files", type=int, metavar="N",
+                    help="OPTIONAL huge-datasets award: create a view over the "
+                         "first N remote OpenTelemetry Parquet files (1-50; one "
+                         "file ~1B rows) and run a timed demo. No download.")
+    ap.add_argument("--otel-index", action="store_true",
+                    help="With --otel-files: also build a BM25 index on Body and "
+                         "run a full-text query (reports query times).")
     args = ap.parse_args()
+
+    # --- OPTIONAL huge-datasets path (independent of BGL/OpenStack core) ---
+    if args.otel_files:
+        import otel
+        otel.demo(n_files=args.otel_files, do_index=args.otel_index)
+        return
 
     bgl_path = args.bgl
     os_paths = []

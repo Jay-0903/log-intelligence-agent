@@ -223,9 +223,11 @@ Optional environment variables: `SERENEDB_HOST` (localhost), `SERENEDB_PORT` (78
 
 - `python load_logs.py --sample --loghub ./loghub --all-systems` also loads every
   loghub sample system into a `logs` table for a multi-system demo.
-- Remote Parquet at scale: SereneDB can query S3 Parquet in place with
-  `read_parquet('<url>')` (see the OpenTelemetry dataset in the brief) — a natural
-  next step for the "Huge Datasets" award.
+- **Huge datasets (optional award):** query 50B rows of remote OpenTelemetry
+  Parquet in place (zero-ETL) with `read_parquet('<url>')` + a BM25 index on
+  `Body`. See **[`docs/HUGE_DATASETS.md`](docs/HUGE_DATASETS.md)** and run
+  `python load_logs.py --otel-files 1 --otel-index`. Independent of the core
+  BGL/OpenStack workflow; does not change the main score.
 
 ## Datasets & citation
 

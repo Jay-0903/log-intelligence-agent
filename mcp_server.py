@@ -145,5 +145,46 @@ def latency_stats() -> str:
     return _json(tools.openstack_latency_stats())
 
 
+# ── OPTIONAL: huge datasets (remote OpenTelemetry Parquet, zero-ETL) ─────────
+@mcp.tool()
+def otel_setup(n_files: int = 1, build_index: bool = False) -> str:
+    """OPTIONAL huge-datasets award. Point SereneDB at the first `n_files` remote
+    OpenTelemetry Parquet files (1-50; one file ~1 billion rows) WITHOUT
+    downloading, as a view. If build_index=true, also build a BM25 index on the
+    `Body` text field. Returns the view/index status and the file URLs."""
+    import otel
+    urls = otel.create_view(n_files)
+    out = {"view": otel.OTEL_VIEW, "files": len(urls), "urls": urls}
+    if build_index:
+        out["index_build_seconds"] = round(otel.build_index(), 2)
+    return json.dumps(out, indent=2)
+
+
+@mcp.tool()
+def otel_aggregate(metric: str = "service") -> str:
+    """OPTIONAL. Aggregate over the remote OTel view (run otel_setup first).
+    metric: "service" (counts per ServiceName), "severity" (counts per
+    SeverityText) or "count" (total rows). Returns rows + the query time in
+    seconds, so you can report how much data was queried and how long it took."""
+    import otel
+    if metric == "count":
+        n, secs = otel.row_count()
+        return json.dumps({"rows_queried": n, "seconds": round(secs, 2)}, indent=2)
+    rows, secs = (otel.by_severity() if metric == "severity" else otel.by_service())
+    return json.dumps({"rows": rows, "seconds": round(secs, 2)},
+                      default=str, indent=2)
+
+
+@mcp.tool()
+def otel_search(phrase: str, limit: int = 20) -> str:
+    """OPTIONAL. BM25 full-text search of the remote OTel `Body` field (run
+    otel_setup with build_index=true first). Returns ranked hits, the query time
+    and the SQL used."""
+    import otel
+    rows, secs, sql = otel.search_body(phrase, limit)
+    return json.dumps({"rows": rows, "seconds": round(secs, 2), "query": sql},
+                      default=str, indent=2)
+
+
 if __name__ == "__main__":
     mcp.run()
