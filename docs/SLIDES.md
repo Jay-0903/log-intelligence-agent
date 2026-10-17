@@ -57,12 +57,16 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 - Team lead/manager prioritised **KERNRTSP** (126 days) → engineer investigates it.
 - Claude chose `search_logs_fulltext("rts panic")` → `top_nodes_for_alert` →
   `get_nearby_events` (node-scoped).
-- Traced the latest occurrence on `R27-M0-NA-C:J11-U11` (2006-01-03): a tight
-  ~20s chain — **KERNMC L2 d-cache machine check → rts panic → "link severed"**
-  on I/O nodes (racks R20–R27) all to front-end 172.16.96.116.
-- **Hypothesis** (not fact): a hardware cache fault the runtime couldn't ride
-  through. Next step: flag the node for diagnostics. Logs show the sequence, not
-  the root cause.
+- Two phases: Jun–Sep 2005 partition-wide bursts (2,048 panics on 06-14 alone =
+  >half of KERNRTSP) → steady ≤24/week trickle to Jan 2006. 1–3 panics on nearly
+  every node = whole-fleet, not a few bad chips.
+- Latest occurrence `R27-M0-NA-C:J11-U11` (2006-01-03), after a quiet hour:
+  `KERNMC L2 dcache parity error` → ~19s register dump → `rts panic` → within 1s,
+  `APPSEV ciod ... Link has been severed` on I/O nodes (R20–R27) to front-end
+  172.16.96.116 (130 APPSEV lines / 130 nodes that day).
+- **Hypothesis** (not fact): one chip's uncorrectable cache error **likely** took
+  down a multi-rack job — **consistent with** the chain. Honest caveat: 333
+  KERNMNTF lines that day weren't time-correlated, so not tied in.
 
 ---
 
