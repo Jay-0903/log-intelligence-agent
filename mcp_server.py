@@ -191,17 +191,20 @@ def trend_by_week(category: str = "", limit: int = 60,
 @mcp.tool()
 def openstack_by_component(start: str = "", end: str = "") -> str:
     """TEAM LEAD / MANAGER aggregation. OpenStack counts per nova service
-    (nova-api/compute/scheduler): total lines, problem lines, problem %, average
-    latency, and the owning team. Default scope is the WHOLE corpus; pass
-    start/end to count over a stated period. The core OpenStack error-rate view."""
+    (nova-api/compute/scheduler): total lines, average latency, the owning team,
+    and `error_lines`/`error_pct` = lines whose LEVEL is ERROR/CRITICAL or whose
+    text matches error keywords — NOT the dataset's labelled anomalies
+    (anomaly_labels.txt is not inline in the raw logs). Report it as an
+    error-keyword rate. Default scope is the WHOLE corpus; pass start/end for a
+    period."""
     return _json(tools.count_openstack_by_component(start or None, end or None))
 
 
 @mcp.tool()
 def latency_stats() -> str:
     """MANAGER / TEAM LEAD latency distribution. Per nova service over the whole
-    OpenStack corpus: request count, avg/min/max latency (ms). Use measured
-    latency only; do not invent downtime or customer impact."""
+    OpenStack corpus: count, avg, min, p50, p95, p99, max latency (ms). Use
+    measured latency only; do not invent downtime or customer impact."""
     return _json(tools.openstack_latency_stats())
 
 
