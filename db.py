@@ -7,7 +7,7 @@ talk to it with the standard `psycopg` driver.
 Config via environment variables (all optional):
   SERENEDB_HOST      default: localhost
   SERENEDB_PORT      default: 7890
-  SERENEDB_USER      default: (driver default / PGUSER)
+  SERENEDB_USER      default: postgres
   SERENEDB_PASSWORD  default: (none)
   SERENEDB_DB        default: (driver default / PGDATABASE)
 """
@@ -29,13 +29,13 @@ def get_conn():
 
     params = {
         "host": os.getenv("SERENEDB_HOST", "localhost"),
+        "user": os.getenv("SERENEDB_USER", "postgres"),
         "port": int(os.getenv("SERENEDB_PORT", "7890")),
         "autocommit": True,
         "row_factory": dict_row,
         "connect_timeout": 5,
     }
-    for key, env in (("user", "SERENEDB_USER"),
-                     ("password", "SERENEDB_PASSWORD"),
+    for key, env in (("password", "SERENEDB_PASSWORD"),
                      ("dbname", "SERENEDB_DB")):
         if os.getenv(env):
             params[key] = os.getenv(env)
@@ -46,7 +46,7 @@ def get_conn():
         raise SystemExit(
             f"\n❌ Could not connect to SereneDB at {params['host']}:{params['port']}.\n"
             "   Is the container running?\n"
-            "     docker run -d --name serenedb -p 7890:7890 serenedb/serenedb\n"
+            "     docker run -d --name serenedb -p 7890:7890 -e SERENEDB_HOST_AUTH_METHOD=trust serenedb/serenedb\n"
             f"   Original error: {e}\n"
         )
     return _conn
