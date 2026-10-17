@@ -170,7 +170,7 @@ def answer_team_lead(question):
 
     osc = tools.count_openstack_by_component()
     if _unavailable(osc):
-        out += ["", "OpenStack not loaded — skipping its problem-rate section."]
+        out += ["", f"OpenStack unavailable — {osc.get('note', 'skipped')}"]
     else:
         out += ["", "OBSERVED — OpenStack error-keyword rate by nova service "
                 "(ERROR/CRITICAL level or error words; NOT labelled anomalies):"]
@@ -223,7 +223,8 @@ def answer_manager(question):
 
     osc = tools.count_openstack_by_component()
     if _unavailable(osc):
-        out += ["", "OpenStack not loaded — prioritization uses BGL only."]
+        out += ["", f"OpenStack unavailable — {osc.get('note', 'skipped')} "
+                "Prioritization uses BGL only."]
     else:
         out += ["", "OBSERVED — OpenStack services ranked by error-keyword lines "
                 "(NOT labelled anomalies):"]

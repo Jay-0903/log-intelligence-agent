@@ -328,11 +328,65 @@ def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
                       "start": start, "end": end}, sql, rows, limit)
 
 
+def bgl_trend_by_week(category=None, limit=60, start=None, end=None):
+    """TOOL (team lead/manager): BGL alert volume per WEEK — for week-over-week
+    trend questions (the brief asks for this).
+
+    Uses date_trunc('week', ...) to bucket by ISO week start. Input: optional
+    category, limit, start/end (default = whole corpus). Output: week_start,
+    alert_events per week.
+
+    NOTE: date_trunc('week', ...) is the DuckDB-style function; verify the exact
+    name against the SereneDB docs (search_docs 'date_trunc week'). Isolated here
+    so it is a one-line change if the docs differ (e.g. time_bucket)."""
+    where = "ts > 0"
+    params = []
+    if category:
+        where += " AND alert = %s"
+        params.append(category)
+    else:
+        where += " AND alert <> '-'"
+    tw, tp, period = _time_clause("ts", start, end)
+    where += tw
+    params += tp
+    sql = f"""
+        SELECT CAST(date_trunc('week', to_timestamp(ts)) AS DATE) AS week_start,
+               COUNT(*) AS alert_events
+        FROM {TABLE}
+        WHERE {where}
+        GROUP BY week_start
+        ORDER BY week_start
+        LIMIT {limit}
+    """
+    rows = query(sql, params or None)
+    return _envelope("bgl_trend_by_week",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"category": category or "any alert", "bucket": "week",
+                      "start": start, "end": end}, sql, rows, limit)
+
+
 def _missing_table_env(tool, table):
     return {
         "tool": tool, "scope": f"{table} (NOT LOADED)", "filters": {},
         "query": None, "rows": [], "count": 0, "truncated": False,
         "limit": None, "note": f"Table '{table}' is not loaded; skipped.",
+    }
+
+
+def _query_error_env(tool, table, err):
+    """Returned when the table EXISTS but the query failed (e.g. a schema
+    mismatch after a column rename). Distinct from 'not loaded' so the agent
+    isn't told the table is missing when it is really a query error."""
+    hint = ""
+    if "error_match" in str(err) or "column" in str(err).lower():
+        hint = (" The table may be from an older schema — reload it: "
+                "python load_logs.py --openstack ./data/OpenStack (the "
+                "is_problem column was renamed to error_match).")
+    return {
+        "tool": tool, "scope": f"{table} (QUERY ERROR)", "filters": {},
+        "query": None, "rows": [], "count": 0, "truncated": False,
+        "limit": None,
+        "note": f"Query against '{table}' failed: {str(err).splitlines()[0]}.{hint}",
     }
 
 
@@ -366,8 +420,8 @@ def count_openstack_by_component(start=None, end=None):
     """
     try:
         rows = query(sql, tp or None)
-    except Exception:
-        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
+    except Exception as e:
+        return _query_error_env("count_openstack_by_component", OPENSTACK_TABLE, e)
     return _envelope("count_openstack_by_component",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
                      {"group_by": "component (nova service)",
@@ -428,8 +482,8 @@ def openstack_request_trace(request_id, limit=50):
            f'WHERE request_id = %s ORDER BY ts, id LIMIT %s')
     try:
         rows = query(sql, (request_id, limit))
-    except Exception:
-        return _missing_table_env("openstack_request_trace", OPENSTACK_TABLE)
+    except Exception as e:
+        return _query_error_env("openstack_request_trace", OPENSTACK_TABLE, e)
     return _envelope("openstack_request_trace",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
                      {"request_id": request_id}, sql, rows, limit)

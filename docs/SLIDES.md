@@ -12,6 +12,8 @@ the key points, and what to show live. Export to your deck tool of choice.
 - SchubKI National AI Hackathon 2026 · SereneDB challenge
 - Base corpus: BGL (search/trends) + OpenStack (aggregation)
 - One workflow: question → evidence → recommendation, for 3 roles
+- **Headline:** the loudest BGL alert (KERNDTLB, 152,734 lines) is **not**
+  recurring — **99.6% fell on one day (2005-06-12)**. What's loud ≠ what recurs.
 
 ---
 
@@ -50,12 +52,16 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 
 ---
 
-## Slide 5 — Engineer (live)
+## Slide 5 — Engineer (live, from the real Claude/MCP session)
 
-- Question: *"kernel instruction cache parity error"*
-- Show: BM25-ranked hits on `KERNEL`, then the ±60s nearby-events window.
-- Observed → Hypothesis (symptom, not confirmed cause) → Next step (runbook +
-  wider window).
+- Question: *"investigate kernel instruction cache parity errors; show lines +
+  what happened before/after."*
+- Claude chose `search_logs_fulltext` → `get_nearby_events` (node-scoped).
+- Found: all hits on **one node `R63-M0-N3-C:J02-U11`**, INFO/corrected, in
+  **two nightly bursts**; cluster-wide windows returned only this node → rules
+  out a shared midplane/power event.
+- Hypothesis: marginal L1 i-cache part (not cosmic-ray). Next step: flag that
+  node for diagnostics/replacement. Explicitly: no confirmed root cause.
 
 ---
 
@@ -64,9 +70,12 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 - Team Lead: whole-corpus counts show KERNDTLB leads (152,734), but
   **`trend_by_day` reveals 99.6% fell on one day (2005-06-12)** — the real
   insight. Route to Kernel Platform, but as a one-day incident, not a defect.
-- Manager: ranked by measured frequency, each routed to its **correct** owner
-  (KERN* → Kernel Platform, APP* → Application Runtime); OpenStack nova-api 2.01%
-  error rate. **No invented** downtime / cost / customer impact.
+  The *actually* recurring alerts are **KERNRTSP (126 days)** and **APPSEV (70
+  days)** — Claude reasoned this from `alert_profile` + `trend_by_day`.
+- Manager: ranked by **persistence** (days present), each routed to its correct
+  owner (KERN* → Kernel Platform, APP* → Application Runtime). **No invented**
+  downtime / cost / customer impact; when OpenStack was unavailable it said so
+  rather than guessing.
 
 ---
 
