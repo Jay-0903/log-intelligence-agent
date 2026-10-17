@@ -189,7 +189,11 @@ def parse_openstack_line(service, raw):
     component = service
     ts = _os_epoch(g["date"], g["time"])
     msg = rest
-    is_problem = 1 if (level in ("ERROR", "CRITICAL") or OS_PROBLEM.search(rest)) else 0
+    # NOTE: this flags lines whose LEVEL is ERROR/CRITICAL or whose text matches
+    # error keywords. It is NOT the dataset's labelled anomaly ground truth
+    # (anomaly_labels.txt), which is not inline in the raw logs. Named
+    # `error_match` so downstream numbers are honest about what they measure.
+    error_match = 1 if (level in ("ERROR", "CRITICAL") or OS_PROBLEM.search(rest)) else 0
     return (
         f"{g['date']} {g['time']}",   # log_time
         ts,                            # ts (epoch seconds, best effort)
@@ -199,7 +203,7 @@ def parse_openstack_line(service, raw):
         req,                           # request_id
         tenant,                        # tenant_id
         latency_ms,                    # latency_ms
-        is_problem,
+        error_match,                   # error_match (keyword/level, not labelled)
         msg,                           # message
         raw.strip(),                   # raw
     )
@@ -219,12 +223,12 @@ def load_openstack(cur, log_paths):
         CREATE TABLE {OPENSTACK_TABLE} (
             id INTEGER, log_time TEXT, ts BIGINT, pid INTEGER, level TEXT,
             component TEXT, request_id TEXT, tenant_id TEXT,
-            latency_ms DOUBLE PRECISION, is_problem INTEGER, message TEXT, raw TEXT
+            latency_ms DOUBLE PRECISION, error_match INTEGER, message TEXT, raw TEXT
         )
     """)
     insert = f"""INSERT INTO {OPENSTACK_TABLE}
         (id, log_time, ts, pid, level, component, request_id, tenant_id,
-         latency_ms, is_problem, message, raw)
+         latency_ms, error_match, message, raw)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
 
     batch, total = [], 0

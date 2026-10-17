@@ -89,14 +89,28 @@ def answer_engineer(question):
                        "falling back to BGL search instead.")
             dataset = "bgl"
         else:
+            rows = env["rows"]
             out.append(f"OBSERVED — top OpenStack matches for '{phrase}':")
-            out += _fmt_rows(env["rows"],
-                             ["level", "component", "message"], [6, 14, 80])
+            out += _fmt_rows(rows,
+                             ["level", "component", "request_id", "message"],
+                             [6, 13, 22, 60])
             out.append(_provenance(env))
+            # Follow the request_id of the top hit through its full lifecycle.
+            req = next((r.get("request_id") for r in rows if r.get("request_id")),
+                       None)
+            if req:
+                trace = tools.openstack_request_trace(req, limit=15)
+                out += ["", f"OBSERVED — full lifecycle of request {req} "
+                        f"({trace['count']} lines, time order):"]
+                out += _fmt_rows(trace["rows"],
+                                 ["log_time", "level", "component", "message"],
+                                 [23, 6, 13, 50])
+                out.append(_provenance(trace))
             out += ["", "HYPOTHESIS — the highest-scoring lines point at the "
-                    "component above.",
-                    "NEXT STEP — pull the request_id from a hit and grep nearby "
-                    "lines for the same request to see the full request lifecycle."]
+                    "component above; the request trace shows where in the "
+                    "request's lifecycle it occurred.",
+                    "NEXT STEP — if the trace shows an error mid-request, check "
+                    "that component's handler for that request path."]
             return "\n".join(out)
 
     # BGL: full-text search, then nearby events around the top hit.
@@ -111,8 +125,11 @@ def answer_engineer(question):
 
     if rows and rows[0].get("ts"):
         ts = rows[0]["ts"]
-        near = tools.get_nearby_events_bgl(ts, window_seconds=60, limit=8)
-        out += ["", f"OBSERVED — context +/-60s around the top hit (ts={ts}):"]
+        hit_node = rows[0].get("node")
+        near = tools.get_nearby_events_bgl(ts, window_seconds=60, limit=8,
+                                           node=hit_node)
+        out += ["", f"OBSERVED — context +/-60s around the top hit on node "
+                f"{hit_node} (ts={ts}):"]
         out += _fmt_rows(near["rows"], ["alert", "severity", "node", "message"],
                          [10, 7, 18, 64])
         out.append(_provenance(near))
@@ -155,10 +172,11 @@ def answer_team_lead(question):
     if _unavailable(osc):
         out += ["", "OpenStack not loaded — skipping its problem-rate section."]
     else:
-        out += ["", "OBSERVED — OpenStack problem rate by nova service, whole corpus:"]
+        out += ["", "OBSERVED — OpenStack error-keyword rate by nova service "
+                "(ERROR/CRITICAL level or error words; NOT labelled anomalies):"]
         out += _fmt_rows(osc["rows"],
-                         ["component", "team", "total", "problems", "problem_pct"],
-                         [16, 14, 8, 9, 11])
+                         ["component", "team", "total", "error_lines", "error_pct"],
+                         [16, 14, 8, 11, 9])
         out.append(_provenance(osc))
 
     if prof["rows"]:
@@ -207,41 +225,55 @@ def answer_manager(question):
     if _unavailable(osc):
         out += ["", "OpenStack not loaded — prioritization uses BGL only."]
     else:
-        out += ["", "OBSERVED — OpenStack services ranked by problem count:"]
+        out += ["", "OBSERVED — OpenStack services ranked by error-keyword lines "
+                "(NOT labelled anomalies):"]
         out += _fmt_rows(osc["rows"],
-                         ["component", "team", "problems", "problem_pct"],
-                         [16, 14, 9, 11])
+                         ["component", "team", "error_lines", "error_pct"],
+                         [16, 14, 11, 9])
         out.append(_provenance(osc))
 
-    out += ["", "PRIORITIZED ACTIONS (by measured frequency + spread, with the "
-            "concrete nodes to inspect first):"]
+    out += ["", "PRIORITIZED ACTIONS — ranked by SPREAD (sustained problems "
+            "before one-day bursts), each with concrete nodes:"]
+    # Rank by spread: sustained (many days) outrank single-day bursts, then by
+    # affected nodes, then by raw lines. This avoids ranking a one-day burst
+    # above a chronic multi-day problem purely on raw count.
+    def _spread_key(r):
+        days = r.get("distinct_days") or 0
+        nodes = r.get("distinct_nodes") or 0
+        return (days > 1, days, nodes, r.get("lines") or 0)
+    ranked = sorted(prof["rows"][:5], key=_spread_key, reverse=True)[:3]
     rank = 1
-    for row in prof["rows"][:3]:
+    for row in ranked:
         cat = row["category"]
         team = tools.team_for_bgl_alert(cat)
         nodes = tools.bgl_top_nodes_for_alert(cat, limit=3)["rows"]
         node_list = ", ".join(n["node"] for n in nodes) or "affected nodes"
         one_day = row["distinct_days"] == 1
-        shape = (f"concentrated on ONE day ({row['first_seen']})" if one_day
-                 else f"over {row['distinct_days']} days "
-                      f"({row['first_seen']}..{row['last_seen']})")
+        if one_day:
+            shape = (f"BURST — concentrated on ONE day ({row['first_seen']}); "
+                     "treat as a single incident to investigate, not a chronic defect")
+        else:
+            shape = (f"SUSTAINED — {row['distinct_days']} days "
+                     f"({row['first_seen']}..{row['last_seen']})")
         out.append(
             f"  {rank}. BGL '{cat}' — {row['lines']:,} lines on "
-            f"{row['distinct_nodes']} nodes, {shape}. Route to {team}; "
+            f"{row['distinct_nodes']} nodes. {shape}. Route to {team}; "
             f"inspect nodes {node_list} first.")
         rank += 1
     if not _unavailable(osc):
         for row in osc["rows"][:2]:
-            if row.get("problems"):
+            if row.get("error_lines"):
                 out.append(f"  {rank}. OpenStack {row['component']} — "
-                           f"{row['problems']} problem lines "
-                           f"({row['problem_pct']}%). Owner: {row['team']}.")
+                           f"{row['error_lines']} error-keyword lines "
+                           f"({row['error_pct']}%). Owner: {row['team']}.")
                 rank += 1
 
     out += ["",
             "NOTE — these are counts of matching log lines, not confirmed incidents, "
             "and the logs do not establish financial loss, downtime or customer "
-            "impact. Priority here means measured frequency and clear ownership."]
+            "impact. BGL alerts use the dataset's labels; OpenStack 'error' here "
+            "means ERROR/CRITICAL level or error keywords, NOT the dataset's "
+            "labelled anomalies. Priority = spread (days x nodes) + ownership."]
     return "\n".join(out)
 
 

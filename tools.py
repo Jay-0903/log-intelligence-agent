@@ -53,6 +53,18 @@ def _envelope(tool, scope, filters, sql, rows, limit):
     }
 
 
+MAX_LIMIT = 200          # judges look for useful bounds on returned results
+
+
+def _clamp_limit(limit, default=20):
+    """Keep result limits in a sane, useful range (1..MAX_LIMIT)."""
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(n, MAX_LIMIT))
+
+
 def _count(table, where="", params=None):
     sql = f"SELECT COUNT(*) AS n FROM {table}"
     if where:
@@ -167,6 +179,7 @@ def search_bgl_fulltext(phrase, limit=15, start=None, end=None):
     Output: ranked log lines (alert, ts, node, severity, message, score).
     Uses SereneDB's inverted index `bgl_idx` and the @@ / ts_phrase operator.
     """
+    limit = _clamp_limit(limit)
     cols = ['id', 'alert', 'ts', 'node', 'event_time AS "datetime"',
             'severity', 'component', 'message']
     tw, tp, period = _time_clause("ts", start, end)
@@ -183,20 +196,29 @@ def search_bgl_fulltext(phrase, limit=15, start=None, end=None):
     return env
 
 
-def get_nearby_events_bgl(ts, window_seconds=120, limit=20):
+def get_nearby_events_bgl(ts, window_seconds=120, limit=20, node=None):
     """TOOL (engineer): events within +/- window_seconds of a Unix timestamp.
 
-    Input:  ts (unix seconds), window_seconds (int), limit (int)
+    Input:  ts (unix seconds), window_seconds (int), limit (int),
+            node (optional) — restrict to one node so a wide window on a large
+            cluster doesn't mix in unrelated nodes.
     Output: chronologically ordered log lines around that moment.
     """
+    limit = _clamp_limit(limit)
+    where = "ts > 0 AND ts BETWEEN %s AND %s"
+    params = [ts - window_seconds, ts + window_seconds]
+    if node:
+        where += " AND node = %s"
+        params.append(node)
+    params.append(limit)
     sql = (f'SELECT id, alert, ts, node, event_time AS "datetime", severity, '
            f'component, message FROM {TABLE} '
-           f'WHERE ts > 0 AND ts BETWEEN %s AND %s ORDER BY ts, id LIMIT %s')
-    rows = query(sql, (ts - window_seconds, ts + window_seconds, limit))
+           f'WHERE {where} ORDER BY ts, id LIMIT %s')
+    rows = query(sql, params)
     return _envelope(
         "get_nearby_events_bgl",
         f"BGL ({_count(TABLE):,} lines)",
-        {"ts": ts, "window_seconds": window_seconds},
+        {"ts": ts, "window_seconds": window_seconds, "node": node},
         sql, rows, limit)
 
 
@@ -205,6 +227,7 @@ def search_openstack_fulltext(phrase, limit=15, start=None, end=None):
     optional time filter (start/end as unix ts or 'YYYY-MM-DD'[ HH:MM:SS])."""
     if not _table_exists(OPENSTACK_TABLE):
         return _missing_table_env("search_openstack_fulltext", OPENSTACK_TABLE)
+    limit = _clamp_limit(limit)
     cols = ['id', 'log_time', 'ts', 'level', 'component', 'request_id',
             'tenant_id', 'latency_ms', 'message']
     tw, tp, period = _time_clause("ts", start, end)
@@ -315,7 +338,12 @@ def _missing_table_env(tool, table):
 
 def count_openstack_by_component(start=None, end=None):
     """TOOL (team lead/manager): OpenStack counts grouped by nova service, with
-    error rate, avg latency and the owning team.
+    the owning team, avg latency, and an ERROR-KEYWORD rate.
+
+    IMPORTANT: `error_pct` is the share of lines whose LEVEL is ERROR/CRITICAL or
+    whose text matches error keywords — NOT the dataset's labelled anomaly rate
+    (anomaly_labels.txt is not inline in the raw logs). Report it as an
+    error-keyword rate, not a true anomaly rate.
 
     Default scope is the WHOLE corpus; pass start/end (unix ts or
     'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period."""
@@ -326,15 +354,15 @@ def count_openstack_by_component(start=None, end=None):
         SELECT os.component,
                COALESCE(o.team, 'Unmapped') AS team,
                COUNT(*) AS total,
-               SUM(os.is_problem) AS problems,
-               ROUND((100.0 * SUM(os.is_problem) / COUNT(*))::NUMERIC, 2) AS problem_pct,
+               SUM(os.error_match) AS error_lines,
+               ROUND((100.0 * SUM(os.error_match) / COUNT(*))::NUMERIC, 2) AS error_pct,
                ROUND(AVG(os.latency_ms)::NUMERIC, 1) AS avg_latency_ms
         FROM {OPENSTACK_TABLE} os
         LEFT JOIN {OWNERS_TABLE} o
           ON o.dataset = 'OpenStack' AND o.component = os.component
         WHERE 1=1{tw}
         GROUP BY os.component, team
-        ORDER BY problems DESC
+        ORDER BY error_lines DESC
     """
     try:
         rows = query(sql, tp or None)
@@ -347,8 +375,9 @@ def count_openstack_by_component(start=None, end=None):
 
 
 def openstack_latency_stats():
-    """TOOL (manager/team lead): request latency distribution per nova service
-    over the whole OpenStack corpus (count, avg, p95-ish via max)."""
+    """TOOL (manager/team lead): request latency DISTRIBUTION per nova service
+    over the whole OpenStack corpus: count, avg, min, median (p50), p95, p99,
+    max — real percentiles, not an approximation."""
     if not _table_exists(OPENSTACK_TABLE):
         return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
     sql = f"""
@@ -356,19 +385,54 @@ def openstack_latency_stats():
                COUNT(latency_ms) AS requests,
                ROUND(AVG(latency_ms)::NUMERIC, 1) AS avg_ms,
                ROUND(MIN(latency_ms)::NUMERIC, 1) AS min_ms,
+               ROUND(quantile_cont(latency_ms, 0.50)::NUMERIC, 1) AS p50_ms,
+               ROUND(quantile_cont(latency_ms, 0.95)::NUMERIC, 1) AS p95_ms,
+               ROUND(quantile_cont(latency_ms, 0.99)::NUMERIC, 1) AS p99_ms,
                ROUND(MAX(latency_ms)::NUMERIC, 1) AS max_ms
         FROM {OPENSTACK_TABLE}
         WHERE latency_ms IS NOT NULL
         GROUP BY component
-        ORDER BY avg_ms DESC
+        ORDER BY p95_ms DESC
     """
     try:
         rows = query(sql)
     except Exception:
-        return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
+        # Fallback if quantile_cont is unavailable on this build.
+        fsql = f"""
+            SELECT component, COUNT(latency_ms) AS requests,
+                   ROUND(AVG(latency_ms)::NUMERIC,1) AS avg_ms,
+                   ROUND(MIN(latency_ms)::NUMERIC,1) AS min_ms,
+                   ROUND(MAX(latency_ms)::NUMERIC,1) AS max_ms
+            FROM {OPENSTACK_TABLE} WHERE latency_ms IS NOT NULL
+            GROUP BY component ORDER BY avg_ms DESC
+        """
+        try:
+            rows = query(fsql)
+            sql = fsql + "   -- [fallback: percentiles unavailable]"
+        except Exception:
+            return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
     return _envelope("openstack_latency_stats",
                      f"OpenStack (whole corpus, {_count(OPENSTACK_TABLE):,} lines)",
-                     {"metric": "latency_ms"}, sql, rows, None)
+                     {"metric": "latency_ms (p50/p95/p99)"}, sql, rows, None)
+
+
+def openstack_request_trace(request_id, limit=50):
+    """TOOL (engineer): the full lifecycle of one OpenStack request — all log
+    lines sharing a request_id, in time order. This is the concrete follow-up to
+    an engineer's OpenStack search hit (pull its request_id, then trace it)."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("openstack_request_trace", OPENSTACK_TABLE)
+    limit = _clamp_limit(limit)
+    sql = (f'SELECT id, log_time, ts, level, component, request_id, tenant_id, '
+           f'latency_ms, message FROM {OPENSTACK_TABLE} '
+           f'WHERE request_id = %s ORDER BY ts, id LIMIT %s')
+    try:
+        rows = query(sql, (request_id, limit))
+    except Exception:
+        return _missing_table_env("openstack_request_trace", OPENSTACK_TABLE)
+    return _envelope("openstack_request_trace",
+                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
+                     {"request_id": request_id}, sql, rows, limit)
 
 
 def bgl_alert_profile(limit=8, start=None, end=None):

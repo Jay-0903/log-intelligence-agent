@@ -70,11 +70,23 @@ def search_logs_fulltext(dataset: str, phrase: str, limit: int = 15,
 
 
 @mcp.tool()
-def get_nearby_events(ts: int, window_seconds: int = 120, limit: int = 20) -> str:
+def get_nearby_events(ts: int, window_seconds: int = 120, limit: int = 20,
+                      node: str = "") -> str:
     """ENGINEER context window. Given a BGL event's Unix timestamp (`ts` from a
-    search hit), return log lines within +/- window_seconds, in time order.
-    Use this to see what happened JUST BEFORE and AFTER a failure."""
-    return _json(tools.get_nearby_events_bgl(ts, window_seconds, limit))
+    search hit), return log lines within +/- window_seconds, in time order. Pass
+    `node` to restrict to one node so a wide window on a large cluster doesn't
+    mix in unrelated nodes. Use this to see what happened JUST BEFORE and AFTER a
+    failure."""
+    return _json(tools.get_nearby_events_bgl(ts, window_seconds, limit,
+                                             node or None))
+
+
+@mcp.tool()
+def request_trace(request_id: str, limit: int = 50) -> str:
+    """ENGINEER request lifecycle. All OpenStack log lines sharing a `request_id`,
+    in time order — the concrete follow-up to an OpenStack search hit (pull its
+    request_id, then trace the whole request)."""
+    return _json(tools.openstack_request_trace(request_id, limit))
 
 
 # ── Team lead ───────────────────────────────────────────────────────────────

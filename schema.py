@@ -16,7 +16,9 @@ Tables created by the loader:
   openstack_logs  OpenStack nova logs (207k lines full; sample otherwise).
                   Columns:
                     id, log_time, ts, pid, level, component, request_id,
-                    tenant_id, latency_ms, is_problem, message, raw
+                    tenant_id, latency_ms, error_match, message, raw
+                  (error_match = ERROR/CRITICAL level or error keyword, NOT a
+                   labelled anomaly)
 
   component_owners  component -> team mapping (the supplied ownership table).
                   Columns: dataset, component, team, on_call
