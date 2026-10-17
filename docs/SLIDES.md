@@ -3,8 +3,8 @@
 Suggested 9 slides for a ≤5-minute presentation. Each slide lists the headline,
 the key points, and what to show live. Export to your deck tool of choice.
 
-> **The finished deck is `docs/slides.pdf`.** This file is the outline and
-> `docs/SLIDE_NOTES.md` has the full speaker notes behind it.
+> **The finished deck is [`slides.pdf`](slides.pdf)** (in this `docs/` folder).
+> This file is the outline and `SLIDE_NOTES.md` has the full speaker notes.
 
 ---
 

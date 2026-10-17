@@ -553,6 +553,7 @@ def bgl_alert_profile(limit=8, start=None, end=None):
         SELECT p.category, p.lines, p.distinct_nodes, p.distinct_days,
                p.first_seen, p.last_seen,
                MAX(d.day_lines) AS peak_day_lines,
+               arg_max(d.day, d.day_lines) AS peak_day,
                ROUND((MAX(d.day_lines)::NUMERIC / p.lines), 4) AS peak_day_share
         FROM prof p
         JOIN per_day d ON d.alert = p.category
@@ -561,6 +562,9 @@ def bgl_alert_profile(limit=8, start=None, end=None):
         ORDER BY p.lines DESC
         LIMIT {limit}
     """
+    # Note: arg_max(day, day_lines) returns the busiest day for each category.
+    # If a SereneDB build lacks arg_max, replace with a window-function variant
+    # (ROW_NUMBER() OVER (PARTITION BY alert ORDER BY day_lines DESC)).
     # time params appear twice (per_day CTE + prof CTE)
     rows = query(sql, (tp + tp) or None)
     return _envelope("bgl_alert_profile",
