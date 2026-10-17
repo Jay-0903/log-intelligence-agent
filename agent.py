@@ -209,10 +209,12 @@ def answer_team_lead(question):
         nodes = tools.bgl_top_nodes_for_alert(recurring["category"], limit=3)["rows"]
         node_list = ", ".join(n["node"] for n in nodes) or "the affected nodes"
         share = loudest.get("peak_day_share")
-        if share is not None:
-            loud_desc = (f"{float(share)*100:.1f}% of its lines fall on ONE day "
-                         f"({loudest['last_seen']})" if tools._is_burst(loudest)
-                         else f"spans {loudest['distinct_days']} days")
+        peak = loudest.get("peak_day")
+        if share is not None and tools._is_burst(loudest):
+            day = f" ({peak})" if peak else ""
+            loud_desc = f"{float(share)*100:.1f}% of its lines fall on ONE day{day}"
+        elif share is not None:
+            loud_desc = f"spans {loudest['distinct_days']} days"
         else:
             loud_desc = f"spans {loudest['distinct_days']} day(s)"
         out += ["",
@@ -255,8 +257,8 @@ def answer_manager(question):
             "still-active first; one-day bursts flagged) — NOT by raw count:"]
     out += _fmt_rows(by_spread,
                      ["category", "lines", "distinct_nodes", "distinct_days",
-                      "peak_day_share", "last_seen"],
-                     [10, 9, 8, 7, 10, 11])
+                      "peak_day_share", "peak_day", "last_seen"],
+                     [10, 9, 8, 7, 9, 11, 11])
     out.append(_provenance(prof))
 
     osc = tools.count_openstack_by_component()
@@ -301,12 +303,16 @@ def answer_manager(question):
         cat = row["category"]
         team = tools.team_for_bgl_alert(cat)
         share = row.get("peak_day_share")
-        pct = f"{float(share)*100:.1f}% on a single day" if share is not None \
-            else "concentrated on one day"
+        peak = row.get("peak_day")
+        if share is not None:
+            day = f" ({peak})" if peak else ""
+            pct = f"{float(share)*100:.1f}% on a single day{day}"
+        else:
+            pct = "concentrated on one day"
         out.append(
-            f"  {rank}. BGL '{cat}' — BURST: {row['lines']:,} lines, {pct} "
-            f"(seen {row['first_seen']}..{row['last_seen']}). Treat as an "
-            f"incident retrospective, not an ongoing problem. Owner: {team}.")
+            f"  {rank}. BGL '{cat}' — BURST: {row['lines']:,} lines, {pct}. "
+            f"Treat as an incident retrospective, not an ongoing problem. "
+            f"Owner: {team}.")
         rank += 1
     out.append(f"  {rank}. Monitor only: low-rate OpenStack services and small "
                "BGL components (Interconnect / Control System / Observability).")

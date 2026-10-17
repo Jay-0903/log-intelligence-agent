@@ -131,12 +131,20 @@ def alert_categories(limit: int = 20, start: str = "", end: str = "") -> str:
 
 
 @mcp.tool()
-def alert_profile(limit: int = 8, start: str = "", end: str = "") -> str:
-    """TEAM LEAD / MANAGER spread view. Per BGL alert category, a one-GROUP-BY
-    profile: lines, distinct_nodes, distinct_days, first_seen, last_seen. Use
-    this instead of raw counts so you report affected scope ('N lines on D nodes
-    over K days') rather than treating each line as an incident. Default scope is
-    the whole corpus; pass start/end for a period."""
+def alert_profile(limit: int = 12, start: str = "", end: str = "") -> str:
+    """TEAM LEAD / MANAGER spread view. Per BGL alert category: lines,
+    distinct_nodes, distinct_days, first_seen, last_seen, peak_day,
+    peak_day_lines, and **peak_day_share** (max lines on one day / total).
+
+    Use this instead of raw counts so you report affected scope ('N lines on D
+    nodes over K days'), not each line as an incident. IMPORTANT: a category with
+    **peak_day_share >= 0.9 is a BURST** — concentrated on a single day (e.g.
+    KERNDTLB = 99.6% on 2005-06-12) — so treat it as a one-off incident, not a
+    recurring problem, even if it also has a few scattered days.
+
+    Default `limit` is 12 (BGL has 12 alert categories) so you see EVERY category
+    and can rank by spread, not just the loudest few. Pass start/end for a
+    period."""
     return _json(tools.bgl_alert_profile(limit, start or None, end or None))
 
 
