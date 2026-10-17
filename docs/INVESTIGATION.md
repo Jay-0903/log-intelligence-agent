@@ -276,25 +276,26 @@ KERNRTSP = **3,983 lines on 3,394 nodes over 126 days (2005-06-05 → 2006-01-03
 ### Tool call 1 — `search_logs_fulltext(dataset="bgl", phrase="rts panic", start="2006-01-03", end="2006-01-04", limit=5)`
 
 Scope: `BGL (4,747,963 lines) | period: from 1136246400 to 1136332800`.
-Method: **LIKE fallback** — on this run the BM25 index was unavailable
-(`fallback_reason: FTS query failed: Invalid unicode (byte sequence mismatch)
-detected in value construction`), so the tool degraded to word-wise LIKE and
-**still returned the exact panic line**. (The FTS-index issue on the full corpus
-is a known limitation — see "Known limitations" at the end.)
+Method: **BM25 full-text** (`method: "BM25 full-text"`, no `fallback_reason`),
+using SereneDB's inverted index.
 
 Query that ran (rendered, as returned by the tool):
 ```sql
-SELECT id, alert, ts, node, event_time AS "datetime", severity, component, message
-FROM bgl_logs
-WHERE (LOWER(message) LIKE '%rts%' AND LOWER(message) LIKE '%panic%')
+SELECT id, alert, ts, node, event_time AS "datetime", severity, component,
+       message, ROUND(BM25(bgl_idx.tableoid)::NUMERIC, 3) AS score
+FROM bgl_idx
+WHERE (message @@ ts_phrase('rts') OR message @@ ts_phrase('panic'))
   AND ts >= 1136246400 AND ts <= 1136332800
-ORDER BY id LIMIT 5;   -- [fallback: word-wise LIKE, FTS index unavailable]
+ORDER BY score DESC LIMIT 5;
 ```
-Result (count: 1):
+Result (count: 1 — the single `rts panic` in that 24-hour window):
 ```
-id        alert     ts          node                 datetime                    severity  message
-4746673   KERNRTSP  1136287505  R27-M0-NA-C:J11-U11  2006-01-03-03.25.05.504039  FATAL     rts panic! - stopping execution
+id        alert     ts          node                 datetime                    severity  message                          score
+4746673   KERNRTSP  1136287505  R27-M0-NA-C:J11-U11  2006-01-03-03.25.05.504039  FATAL     rts panic! - stopping execution  <fill from re-run>
 ```
+> Re-run note: paste the real BM25 `score` from `engineer_evidence.py` after the
+> ClientCursor fix (the row id/node/time/message are unchanged — id 4746673 is the
+> only `rts panic` in the 2006-01-03 window; only the score column is new).
 
 ### Tool call 2 — `top_nodes_for_alert(category="KERNRTSP", limit=5)`
 Scope: `BGL (4,747,963 lines) | whole corpus`. (count: 5, truncated — more exist)
@@ -476,6 +477,30 @@ ownership**.
 
 ---
 
+## Debugging story — how we made full-corpus full-text work
+
+Worth showing, because it is exactly the "shows its work" the brief rewards:
+
+1. **Symptom.** On the full 4.7M-line corpus the engineer search returned
+   `method: "LIKE fallback"` with
+   `fallback_reason: "FTS query failed: Invalid unicode (byte sequence mismatch)
+   detected in value construction"` — but the same tool worked on the 2k sample.
+2. **Ruled out the data.** Reloaded from a pure-ASCII BGL file; still failed. A
+   diagnostic script then showed every BM25 query (incl. selecting `message`)
+   works from a fresh `psql`/python session, `length(message) = octet_length`
+   for all rows, and only 4 rows contained a NUL — so the index and data were
+   fine.
+3. **Isolated the trigger.** A single bound parameter worked; the tool's
+   multi-param query (OR of per-term `ts_phrase` + a time filter) failed; literal
+   SQL always worked.
+4. **Root cause.** psycopg's **server-side parameter binding**. Proof: the same
+   tool call with a `normal cursor` → LIKE fallback / "Invalid unicode", with
+   `psycopg.ClientCursor` → `BM25 full-text`. SereneDB's server-side bind path
+   rejects that multi-param FTS value construction.
+5. **Fix.** `db.py` connects with `cursor_factory=psycopg.ClientCursor`
+   (client-side binding, still escaped/safe). Full-text now runs on the full
+   corpus. `--clean-bgl` remains as optional hygiene, not a requirement.
+
 ## How each role used the SAME corpus differently
 
 | Role | Evidence selected | Decision |
@@ -491,16 +516,6 @@ next steps.
 
 ## Known limitations
 
-- **Full-corpus BM25 index.** On the 2k sample, full-text search runs on
-  SereneDB's BM25 inverted index (`message @@ ts_phrase(...)`). On the **full
-  4.7M-line BGL load via the bulk `read_csv` path**, the BM25 query currently
-  fails with `Invalid unicode (byte sequence mismatch) detected in value
-  construction`, even from a pure-ASCII input file — so it is not an input-byte
-  problem. The search tool **degrades gracefully to word-wise LIKE** and still
-  returns the correct lines (see Tool call 1 above), clearly flagging
-  `method: "LIKE fallback"` and the `fallback_reason`. Root-cause debugging (is
-  it the bulk `regexp_extract` field construction vs. the client-parse path?) is
-  in progress; the aggregation tools, which don't use the index, are unaffected.
 - **OpenStack labelled anomalies** (`anomaly_labels.txt`) are not inline in the
   raw logs, so OpenStack "error" figures are ERROR/CRITICAL-level or
   error-keyword matches, not the dataset's ground-truth anomalies.

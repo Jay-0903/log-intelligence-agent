@@ -37,6 +37,14 @@ def _params():
         "port": int(os.getenv("SERENEDB_PORT", "7890")),
         "autocommit": True,
         "row_factory": dict_row,
+        # Client-side parameter binding (safe/escaped by psycopg). SereneDB's
+        # server-side bind path fails on the multi-param FTS query shape (OR of
+        # per-term ts_phrase + time filter) with "Invalid unicode (byte sequence
+        # mismatch) detected in value construction" — a single bound param works,
+        # literal SQL always works, but the multi-param bound query does not.
+        # ClientCursor renders params into the SQL text before sending, which
+        # makes full-text search work on the full 4.7M-line corpus.
+        "cursor_factory": psycopg.ClientCursor,
         "connect_timeout": 10,
     }
     for key, env in (("password", "SERENEDB_PASSWORD"),
