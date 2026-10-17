@@ -147,16 +147,20 @@ def latency_stats() -> str:
 
 # ── OPTIONAL: huge datasets (remote OpenTelemetry Parquet, zero-ETL) ─────────
 @mcp.tool()
-def otel_setup(n_files: int = 1, build_index: bool = False) -> str:
+def otel_setup(n_files: int = 1, build_index: bool = False,
+               memory_limit: str = "12GB") -> str:
     """OPTIONAL huge-datasets award. Point SereneDB at the first `n_files` remote
     OpenTelemetry Parquet files (1-50; one file ~1 billion rows) WITHOUT
     downloading, as a view. If build_index=true, also build a BM25 index on the
-    `Body` text field. Returns the view/index status and the file URLs."""
+    `Body` text field (memory-heavy at 1B rows; `memory_limit` tunes the session,
+    and a failed build is reported, not fatal). Returns view/index status + URLs."""
     import otel
     urls = otel.create_view(n_files)
     out = {"view": otel.OTEL_VIEW, "files": len(urls), "urls": urls}
     if build_index:
-        out["index_build_seconds"] = round(otel.build_index(), 2)
+        secs = otel.build_index(memory_limit=memory_limit)
+        out["index_build_seconds"] = round(secs, 2) if secs is not None else None
+        out["index_built"] = secs is not None
     return json.dumps(out, indent=2)
 
 

@@ -69,9 +69,9 @@ S3 endpoint — nothing downloaded, SereneDB read it in place.
 | `COUNT(*)` time | **0.1 s** (reads Parquet metadata) |
 | Top-services aggregation (`GROUP BY ServiceName`) | **15.5 s** over 1B rows |
 | By-severity aggregation (`GROUP BY SeverityText`) | **11.7 s** over 1B rows |
-| Index build time (`Body`) | _fill from your run (--otel-index)_ |
-| Full-text query time (`Body @@ ts_phrase('timeout')`) | _fill from your run_ |
-| Did results stay useful at this scale? | **Yes** — coherent OTel demo-app data |
+| Index build time (`Body`) | **did not complete** — OutOfMemory at 1B rows (6 GiB limit) |
+| Full-text query time (`Body @@ ts_phrase('timeout')`) | n/a (index not built) |
+| Did results stay useful at this scale? | **Yes for aggregation**; full-text index needs more RAM at 1B rows |
 
 **Observed data (1B rows, one file):**
 
@@ -88,8 +88,18 @@ By severity: `info` 676.8M, `information` 140.7M, `error` 122.8M, `trace` 58.3M,
   config, not a loading job.
 - Results remain useful at scale: a manager-style view ("which services and
   severities dominate") is answerable directly over a billion rows. `error`
-  (122.8M) and `fatal` (9,721) are immediately quantified across the day's first
-  30 minutes of telemetry.
+  (122.8M) and `fatal` (9,721) are immediately quantified.
+
+**The scale limit we hit (an honest finding):** building a BM25 **full-text
+index on `Body` across 1B rows ran out of memory** on a 6 GiB limit —
+`OutOfMemory: failed to allocate ... (6.0 GiB/6.0 GiB used)`. This matches the
+organiser guidance that indexing uses your own machine's resources: aggregation
+over remote Parquet scales effortlessly (no local state), but a local inverted
+index at a billion rows needs more RAM. The code now treats a failed index as a
+reported warning, not a crash, so the aggregation evidence still stands. To build
+the Body index, raise the limit (`SET memory_limit='16GB'` /
+`otel_setup(..., memory_limit='16GB')`) or run on a larger machine; the SQL is
+unchanged and already verified.
 
 ## Known limitations / caveats
 

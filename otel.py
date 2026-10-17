@@ -60,9 +60,35 @@ def create_view(n_files=1):
     return urls
 
 
-def build_index():
+def _relax_session_for_indexing(memory_limit="12GB", threads=None):
+    """Apply SereneDB session settings that make a large index build fit in RAM.
+
+    Indexing the Body of ~1B rows is memory-heavy; SereneDB itself suggests
+    these knobs on OutOfMemory. All are best-effort (ignored if unsupported)."""
+    for stmt in (
+        f"SET memory_limit='{memory_limit}'",
+        "SET preserve_insertion_order=false",
+    ):
+        try:
+            execute(stmt)
+        except Exception:
+            pass
+    if threads:
+        try:
+            execute(f"SET threads={int(threads)}")
+        except Exception:
+            pass
+
+
+def build_index(memory_limit="12GB", threads=None):
     """Build a BM25 inverted index on Body (streams from source; only the index
-    is stored locally). Refreshes with REINDEX INDEX."""
+    is stored locally), then REINDEX.
+
+    Returns the build time in seconds, or None if it could not be built (e.g.
+    OutOfMemory at a billion rows). NEVER raises: a failed index must not kill
+    the run — the aggregation results still stand. On OutOfMemory, the message
+    explains how to retry with fewer files or a higher memory limit.
+    """
     # Reuse the shared dictionary if fts.py already made it; otherwise create.
     try:
         execute("CREATE TEXT SEARCH DICTIONARY english "
@@ -70,14 +96,30 @@ def build_index():
                 "WITH (frequency, position, offset)")
     except Exception:
         pass
+
+    _relax_session_for_indexing(memory_limit, threads)
+
     t0 = time.perf_counter()
-    execute(f"DROP INDEX IF EXISTS {OTEL_IDX}")
-    execute(f"CREATE INDEX {OTEL_IDX} ON {OTEL_VIEW} "
-            f"USING inverted(TraceId, Body english)")
+    try:
+        execute(f"DROP INDEX IF EXISTS {OTEL_IDX}")
+        execute(f"CREATE INDEX {OTEL_IDX} ON {OTEL_VIEW} "
+                f"USING inverted(TraceId, Body english)")
+    except Exception as e:
+        msg = str(e)
+        print(f"[warn] Could not build the Body index at this scale ({msg.splitlines()[0]}).")
+        if "memory" in msg.lower() or "allocate" in msg.lower():
+            print("       Indexing ~1B rows of Body exceeded the memory limit.")
+            print("       Retry with fewer files (e.g. --otel-files 1 is still 1B;")
+            print("       there is no sub-file split), OR raise the limit, e.g.:")
+            print("         build_index(memory_limit='16GB')  / SET memory_limit='16GB'")
+            print("       Aggregations above do NOT need the index and still stand.")
+        return None
+
     try:
         execute(f"REINDEX INDEX {OTEL_IDX}")
     except Exception as e:
-        print(f"[warn] REINDEX INDEX failed ({e}); index may still be usable.")
+        print(f"[warn] REINDEX INDEX failed ({e}); the index may still be usable.")
+
     secs = time.perf_counter() - t0
     print(f"[ok] Built inverted index '{OTEL_IDX}' on Body in {secs:.1f}s")
     return secs
@@ -146,12 +188,19 @@ def demo(n_files=1, do_index=False):
 
     if do_index:
         idx_secs = build_index()
-        rows, qsecs, sql = search_body("timeout", limit=10)
-        print(f"\nFull-text 'timeout' on Body: {len(rows)} hits in {qsecs:.1f}s "
-              f"(index built in {idx_secs:.1f}s)")
-        for r in rows[:5]:
-            print(f"  [{r.get('SeverityText')}] {str(r.get('Body'))[:90]}")
-        print(f"\n[query] {sql}")
+        if idx_secs is not None:
+            try:
+                rows, qsecs, sql = search_body("timeout", limit=10)
+                print(f"\nFull-text 'timeout' on Body: {len(rows)} hits in "
+                      f"{qsecs:.1f}s (index built in {idx_secs:.1f}s)")
+                for r in rows[:5]:
+                    print(f"  [{r.get('SeverityText')}] {str(r.get('Body'))[:90]}")
+                print(f"\n[query] {sql}")
+            except Exception as e:
+                print(f"[warn] full-text query failed ({e}).")
+        else:
+            print("\n(Full-text search skipped — index not built; see note above. "
+                  "The aggregation results above are the huge-datasets evidence.)")
 
     print("\n--- Report these for the award: ---")
     print(f"  Files queried:   {len(urls)} of 50  ({S3_BASE}/part_000..)")
