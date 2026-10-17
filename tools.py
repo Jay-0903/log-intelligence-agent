@@ -160,11 +160,32 @@ def _like_fallback(table, cols, phrase, limit, order_by="id",
     sql = (f'SELECT {", ".join(cols)} FROM {table} '
            f'WHERE {where}{extra_where} ORDER BY {order_by} LIMIT %s')
     rows = query(sql, params)
-    shown = sql
-    for v in params:
-        shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
-    shown += "   -- [fallback: word-wise LIKE, FTS index unavailable]"
+    shown = fts.render_sql(sql, params) + \
+        "   -- [fallback: word-wise LIKE, FTS index unavailable]"
     return rows, shown
+
+
+def _fts_or_fallback(index_name, table, cols, phrase, limit, tw, tp):
+    """Try BM25 full-text FIRST; only fall back to LIKE if the index is genuinely
+    unusable — and return WHY. Returns (rows, sql, used_fts, reason).
+
+    Availability is checked per call (no caching), so a reload in another
+    session can't strand the MCP server on a stale 'unavailable' verdict. A real
+    query error is surfaced as the reason instead of being silently masked.
+    """
+    ok, err = fts.fts_available(index_name)
+    if ok:
+        try:
+            rows, sql = fts.search(index_name, "message", phrase, cols, limit,
+                                   extra_where=tw, extra_params=tp)
+            return rows, sql, True, None
+        except Exception as e:
+            # Index exists but this specific query failed — surface it, then
+            # still fall back so the user gets *some* result.
+            err = f"FTS query failed: {str(e).splitlines()[0]}"
+    rows, sql = _like_fallback(table, cols, phrase, limit,
+                               extra_where=tw, extra_params=tp)
+    return rows, sql, False, err or "index not available"
 
 
 # ===========================================================================
@@ -184,16 +205,15 @@ def search_bgl_fulltext(phrase, limit=15, start=None, end=None):
     cols = ['id', 'alert', 'ts', 'node', 'event_time AS "datetime"',
             'severity', 'component', 'message']
     tw, tp, period = _time_clause("ts", start, end)
-    try:
-        rows, sql = fts.search(BGL_IDX, "message", phrase, cols, limit,
-                               extra_where=tw, extra_params=tp)
-    except Exception:
-        rows, sql = _like_fallback(TABLE, cols, phrase, limit,
-                                   extra_where=tw, extra_params=tp)
+    rows, sql, used_fts, reason = _fts_or_fallback(
+        BGL_IDX, TABLE, cols, phrase, limit, tw, tp)
     env = _envelope("search_bgl_fulltext",
                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
-                    {"phrase": phrase, "start": start, "end": end},
+                    {"phrase": phrase, "start": start, "end": end,
+                     "method": "BM25 full-text" if used_fts else "LIKE fallback"},
                     sql, rows, limit)
+    if not used_fts:
+        env["fallback_reason"] = reason
     return env
 
 
@@ -232,16 +252,16 @@ def search_openstack_fulltext(phrase, limit=15, start=None, end=None):
     cols = ['id', 'log_time', 'ts', 'level', 'component', 'request_id',
             'tenant_id', 'latency_ms', 'message']
     tw, tp, period = _time_clause("ts", start, end)
-    try:
-        rows, sql = fts.search(OPENSTACK_IDX, "message", phrase, cols, limit,
-                               extra_where=tw, extra_params=tp)
-    except Exception:
-        rows, sql = _like_fallback(OPENSTACK_TABLE, cols, phrase, limit,
-                                   extra_where=tw, extra_params=tp)
-    return _envelope("search_openstack_fulltext",
-                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
-                     {"phrase": phrase, "start": start, "end": end},
-                     sql, rows, limit)
+    rows, sql, used_fts, reason = _fts_or_fallback(
+        OPENSTACK_IDX, OPENSTACK_TABLE, cols, phrase, limit, tw, tp)
+    env = _envelope("search_openstack_fulltext",
+                    f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
+                    {"phrase": phrase, "start": start, "end": end,
+                     "method": "BM25 full-text" if used_fts else "LIKE fallback"},
+                    sql, rows, limit)
+    if not used_fts:
+        env["fallback_reason"] = reason
+    return env
 
 
 # ===========================================================================

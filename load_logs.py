@@ -339,13 +339,15 @@ def build_indexes(loaded_bgl, loaded_os):
     if loaded_bgl:
         fts.create_inverted_index("bgl_idx", TABLE, "id", ["message"])
         fts.refresh(TABLE)
-        ok = fts.fts_available("bgl_idx")
-        print(f"   bgl_idx on {TABLE}.message        {'[searchable]' if ok else '[NOT searchable]'}")
+        ok, err = fts.fts_available("bgl_idx")
+        print(f"   bgl_idx on {TABLE}.message        "
+              f"{'[searchable]' if ok else '[NOT searchable: ' + str(err) + ']'}")
     if loaded_os:
         fts.create_inverted_index("openstack_idx", OPENSTACK_TABLE, "id", ["message"])
         fts.refresh(OPENSTACK_TABLE)
-        ok = fts.fts_available("openstack_idx")
-        print(f"   openstack_idx on {OPENSTACK_TABLE}.message  {'[searchable]' if ok else '[NOT searchable]'}")
+        ok, err = fts.fts_available("openstack_idx")
+        print(f"   openstack_idx on {OPENSTACK_TABLE}.message  "
+              f"{'[searchable]' if ok else '[NOT searchable: ' + str(err) + ']'}")
 
 
 # ===========================================================================

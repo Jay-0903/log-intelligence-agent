@@ -9,7 +9,8 @@ Numbers referenced (full corpus, verified):
 - Recurring (by days-present): KERNRTSP 126 days, APPSEV 70 days.
 - Kernel Platform owns ~82% of BGL alert lines (284,344 of 348,460).
 - OpenStack: nova-api 2,068 problem lines (2.01%), 91% of all OpenStack problems.
-- Engineer traced parity errors to one node: R63-M0-N3-C:J02-U11.
+- Engineer traced KERNRTSP on R27-M0-NA-C:J11-U11 (2006-01-03): KERNMC cache
+  machine-check -> rts panic -> "link severed" on I/O nodes (racks R20-R27).
 - Index build: 2.4s over 4.7M rows; remote: 1B rows aggregated in ~12–16s.
 
 ---
@@ -69,9 +70,10 @@ Numbers referenced (full corpus, verified):
    cooling/clock) rather than per-node hardware? How would you confirm from logs
    alone?
 
-10. *Ask:* our engineer hypothesis for R63-M0-N3-C:J02-U11 is "marginal L1 i-cache
-    part" from a repeating corrected-parity cadence over two nights. Is cadence a
-    sound signal for marginal-vs-cosmic, or do we need the correction-rate slope?
+10. *Ask:* our engineer hypothesis for the 2006-01-03 KERNRTSP event is a
+    hardware cache fault, from the KERNMC (L2 d-cache machine check) → rts panic →
+    "link severed" chain in ~20s on one node. Is that sequence strong enough to
+    call hardware, or could the panic and the cache MC share an upstream cause?
 
 11. *Ask:* OpenStack `error_match` is level/keyword, not the labelled anomalies.
     If we wanted true anomaly rates, what's the cleanest way to join
