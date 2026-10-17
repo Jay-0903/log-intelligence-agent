@@ -136,10 +136,14 @@ def answer_team_lead(question):
     """Which problems recur, how often, and which teams own them."""
     out = ["TEAM LEAD — recurring patterns & ownership", ""]
 
-    cats = tools.count_bgl_alert_categories(limit=8)
-    out.append("OBSERVED — BGL alert categories, whole corpus (most frequent first):")
-    out += _fmt_rows(cats["rows"], ["category", "n"], [16, 10])
-    out.append(_provenance(cats))
+    prof = tools.bgl_alert_profile(limit=8)
+    out.append("OBSERVED — BGL alert categories, whole corpus — SPREAD not just "
+               "raw count (lines / distinct nodes / distinct days / first..last):")
+    out += _fmt_rows(prof["rows"],
+                     ["category", "lines", "distinct_nodes", "distinct_days",
+                      "first_seen", "last_seen"],
+                     [10, 9, 8, 7, 11, 11])
+    out.append(_provenance(prof))
 
     teams = tools.count_bgl_alerts_by_team(limit=8)
     out += ["", "OBSERVED — BGL events by owning team / component (alerts first):"]
@@ -157,14 +161,23 @@ def answer_team_lead(question):
                          [16, 14, 8, 9, 11])
         out.append(_provenance(osc))
 
-    top_cat = cats["rows"][0]["category"] if cats["rows"] else "the top category"
-    top_team = tools.team_for_bgl_alert(top_cat) if cats["rows"] else "the top team"
-    out += ["",
-            f"HYPOTHESIS — '{top_cat}' is the dominant recurring BGL alert; it maps to "
-            f"the '{top_team}' team.",
-            f"NEXT STEP — ask {top_team} to review '{top_cat}' first; use trend_by_day "
-            f"on that category to confirm whether it is rising or steady before "
-            "committing effort."]
+    if prof["rows"]:
+        top = prof["rows"][0]
+        top_cat = top["category"]
+        top_team = tools.team_for_bgl_alert(top_cat)
+        nodes = tools.bgl_top_nodes_for_alert(top_cat, limit=3)["rows"]
+        node_list = ", ".join(n["node"] for n in nodes) or "the affected nodes"
+        spread = (f"{top['lines']:,} lines on {top['distinct_nodes']} nodes "
+                  f"over {top['distinct_days']} day(s) "
+                  f"({top['first_seen']}..{top['last_seen']})")
+        out += ["",
+                f"HYPOTHESIS — '{top_cat}' is the dominant recurring BGL alert "
+                f"({spread}); it maps to the '{top_team}' team. The spread shows "
+                "whether this is chronic (many days) or a single incident (one day).",
+                f"NEXT STEP — ask {top_team} to inspect nodes {node_list} first "
+                f"(the heaviest sources of '{top_cat}'); use trend_by_day on that "
+                "category to confirm whether it is rising or a one-off before "
+                "committing effort."]
     return "\n".join(out)
 
 
@@ -175,16 +188,20 @@ def answer_manager(question):
     """What deserves attention first and why — measured frequency only."""
     out = ["MANAGER — prioritized risks (measured frequency only)", ""]
 
-    cats = tools.count_bgl_alert_categories(limit=5)
+    prof = tools.bgl_alert_profile(limit=5)
     scope = tools.corpus_scope()
     bgl_n = scope.get("BGL")
     os_n = scope.get("OpenStack")
     os_txt = f"{os_n} lines" if os_n else "not loaded"
     out.append(f"DATA SCOPE — BGL: {bgl_n} lines; OpenStack: {os_txt} "
                "(whole corpus).")
-    out += ["", "OBSERVED — most frequent BGL alert categories:"]
-    out += _fmt_rows(cats["rows"], ["category", "n"], [16, 10])
-    out.append(_provenance(cats))
+    out += ["", "OBSERVED — top BGL alerts by SPREAD (lines / nodes / days / "
+            "first..last), not raw count alone:"]
+    out += _fmt_rows(prof["rows"],
+                     ["category", "lines", "distinct_nodes", "distinct_days",
+                      "first_seen", "last_seen"],
+                     [10, 9, 8, 7, 11, 11])
+    out.append(_provenance(prof))
 
     osc = tools.count_openstack_by_component()
     if _unavailable(osc):
@@ -196,12 +213,22 @@ def answer_manager(question):
                          [16, 14, 9, 11])
         out.append(_provenance(osc))
 
-    out += ["", "PRIORITIZED ACTIONS (by measured frequency, highest first):"]
+    out += ["", "PRIORITIZED ACTIONS (by measured frequency + spread, with the "
+            "concrete nodes to inspect first):"]
     rank = 1
-    for row in cats["rows"][:3]:
-        team = tools.team_for_bgl_alert(row["category"])
-        out.append(f"  {rank}. BGL '{row['category']}' — {row['n']} events. "
-                   f"Route to {team}.")
+    for row in prof["rows"][:3]:
+        cat = row["category"]
+        team = tools.team_for_bgl_alert(cat)
+        nodes = tools.bgl_top_nodes_for_alert(cat, limit=3)["rows"]
+        node_list = ", ".join(n["node"] for n in nodes) or "affected nodes"
+        one_day = row["distinct_days"] == 1
+        shape = (f"concentrated on ONE day ({row['first_seen']})" if one_day
+                 else f"over {row['distinct_days']} days "
+                      f"({row['first_seen']}..{row['last_seen']})")
+        out.append(
+            f"  {rank}. BGL '{cat}' — {row['lines']:,} lines on "
+            f"{row['distinct_nodes']} nodes, {shape}. Route to {team}; "
+            f"inspect nodes {node_list} first.")
         rank += 1
     if not _unavailable(osc):
         for row in osc["rows"][:2]:

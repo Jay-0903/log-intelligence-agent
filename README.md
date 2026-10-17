@@ -143,10 +143,11 @@ then `get_nearby_events`.
 **Verify the MCP connection (quick check):**
 
 1. Restart Claude Desktop / Claude Code after editing the config.
-2. Confirm the `log-intelligence` server appears and lists **9 tools**
+2. Confirm the `log-intelligence` server appears and lists **11 tools**
    (`corpus_scope`, `team_ownership`, `search_logs_fulltext`,
-   `get_nearby_events`, `alert_categories`, `count_alerts_by_team`,
-   `trend_by_day`, `openstack_by_component`, `latency_stats`).
+   `get_nearby_events`, `alert_categories`, `alert_profile`,
+   `top_nodes_for_alert`, `count_alerts_by_team`, `trend_by_day`,
+   `openstack_by_component`, `latency_stats`).
 3. Ask: *"Call corpus_scope"* — you should get BGL/OpenStack line counts back.
 4. Then run one question per role (see `docs/DEMO.md`).
 
@@ -167,6 +168,8 @@ ran), `rows`, `count`, `truncated`, `limit`.
 | `search_logs_fulltext` | engineer | `dataset`, `phrase`, `limit`, `start`/`end` (time filter) | BM25-ranked matching log lines with `score` |
 | `get_nearby_events` | engineer | `ts` (unix), `window_seconds`, `limit` | BGL lines around a moment, in time order |
 | `alert_categories` | team lead | `limit`, `start`/`end` (period) | BGL counts per alert category (whole corpus by default) |
+| `alert_profile` | team lead / manager | `limit`, `start`/`end` | per category: lines, distinct nodes, distinct days, first/last seen (spread, not raw count) |
+| `top_nodes_for_alert` | team lead / engineer | `category`, `limit`, `start`/`end` | nodes with the most lines of a category (names for concrete next steps) |
 | `count_alerts_by_team` | team lead | `limit`, `start`/`end` (period) | BGL events grouped by owning team/component |
 | `trend_by_day` | team lead / manager | `category`, `limit`, `start`/`end` | BGL alert volume per calendar day (trend) |
 | `openstack_by_component` | team lead / manager | `start`/`end` (period) | OpenStack per-service totals, problem %, avg latency, owning team |

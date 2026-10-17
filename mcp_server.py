@@ -88,6 +88,26 @@ def alert_categories(limit: int = 20, start: str = "", end: str = "") -> str:
 
 
 @mcp.tool()
+def alert_profile(limit: int = 8, start: str = "", end: str = "") -> str:
+    """TEAM LEAD / MANAGER spread view. Per BGL alert category, a one-GROUP-BY
+    profile: lines, distinct_nodes, distinct_days, first_seen, last_seen. Use
+    this instead of raw counts so you report affected scope ('N lines on D nodes
+    over K days') rather than treating each line as an incident. Default scope is
+    the whole corpus; pass start/end for a period."""
+    return _json(tools.bgl_alert_profile(limit, start or None, end or None))
+
+
+@mcp.tool()
+def top_nodes_for_alert(category: str, limit: int = 5,
+                        start: str = "", end: str = "") -> str:
+    """TEAM LEAD / ENGINEER. The nodes with the most lines of a given BGL alert
+    category, highest first — so a recommendation can name concrete nodes to
+    inspect. Pass start/end to scope to a period."""
+    return _json(tools.bgl_top_nodes_for_alert(category, limit,
+                                               start or None, end or None))
+
+
+@mcp.tool()
 def count_alerts_by_team(limit: int = 20, start: str = "", end: str = "") -> str:
     """TEAM LEAD ownership view. BGL events grouped by OWNING TEAM and component
     (joined to the ownership table), with alert counts. Default scope is the

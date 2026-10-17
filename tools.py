@@ -371,6 +371,56 @@ def openstack_latency_stats():
                      {"metric": "latency_ms"}, sql, rows, None)
 
 
+def bgl_alert_profile(limit=8, start=None, end=None):
+    """TOOL (team lead/manager): per BGL alert category, a one-GROUP-BY profile
+    showing SPREAD, not just raw line counts:
+      lines, distinct_nodes, distinct_days, first_seen, last_seen.
+
+    This supports the brief's guidance: matching lines are not incidents, so
+    report affected scope ('N lines on D nodes over K days') rather than
+    treating each line as a separate incident. Default scope is the whole
+    corpus; pass start/end to profile over a stated period."""
+    tw, tp, period = _time_clause("ts", start, end)
+    sql = f"""
+        SELECT alert AS category,
+               COUNT(*) AS lines,
+               COUNT(DISTINCT node) AS distinct_nodes,
+               COUNT(DISTINCT CAST(to_timestamp(ts) AS DATE)) AS distinct_days,
+               CAST(to_timestamp(MIN(ts)) AS DATE) AS first_seen,
+               CAST(to_timestamp(MAX(ts)) AS DATE) AS last_seen
+        FROM {TABLE}
+        WHERE alert <> '-' AND ts > 0{tw}
+        GROUP BY alert
+        ORDER BY lines DESC
+        LIMIT {limit}
+    """
+    rows = query(sql, tp or None)
+    return _envelope("bgl_alert_profile",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"group_by": "alert", "start": start, "end": end},
+                     sql, rows, limit)
+
+
+def bgl_top_nodes_for_alert(category, limit=5, start=None, end=None):
+    """TOOL (engineer/team lead): the nodes with the most lines of a given BGL
+    alert category — so a recommendation can name concrete nodes to inspect
+    first. Returns node + line count, highest first."""
+    tw, tp, period = _time_clause("ts", start, end)
+    sql = f"""
+        SELECT node, COUNT(*) AS lines
+        FROM {TABLE}
+        WHERE alert = %s AND ts > 0{tw}
+        GROUP BY node
+        ORDER BY lines DESC, node
+        LIMIT {limit}
+    """
+    rows = query(sql, [category] + tp)
+    return _envelope("bgl_top_nodes_for_alert",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"category": category, "start": start, "end": end},
+                     sql, rows, limit)
+
+
 def bgl_component_for_alert(category):
     """Map a BGL alert category to its owning COMPONENT.
 
