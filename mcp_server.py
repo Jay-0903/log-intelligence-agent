@@ -131,7 +131,7 @@ def alert_categories(limit: int = 20, start: str = "", end: str = "") -> str:
 
 
 @mcp.tool()
-def alert_profile(limit: int = 12, start: str = "", end: str = "") -> str:
+def alert_profile(limit: int = 50, start: str = "", end: str = "") -> str:
     """TEAM LEAD / MANAGER spread view. Per BGL alert category: lines,
     distinct_nodes, distinct_days, first_seen, last_seen, peak_day,
     peak_day_lines, and **peak_day_share** (max lines on one day / total).
@@ -142,9 +142,8 @@ def alert_profile(limit: int = 12, start: str = "", end: str = "") -> str:
     KERNDTLB = 99.6% on 2005-06-12) — so treat it as a one-off incident, not a
     recurring problem, even if it also has a few scattered days.
 
-    Default `limit` is 12 (BGL has 12 alert categories) so you see EVERY category
-    and can rank by spread, not just the loudest few. Pass start/end for a
-    period."""
+    BGL has 41 alert categories; default limit 50 returns all of them, so you can
+    rank by spread, not just the loudest few. Pass start/end for a period."""
     return _json(tools.bgl_alert_profile(limit, start or None, end or None))
 
 

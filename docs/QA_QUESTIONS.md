@@ -6,7 +6,7 @@ found, here's the informed question" — not a generic query.
 
 Numbers referenced (full corpus, verified):
 - KERNDTLB: 152,734 lines, **99.6% on one day (2005-06-12)** — a burst.
-- Recurring (by days-present): KERNRTSP 126 days, APPSEV 70 days.
+- Most persistent (by days-present): KERNMC 144 days, KERNRTSP 126 days, APPSEV 70 days.
 - Kernel Platform owns ~82% of BGL alert lines (284,344 of 348,460).
 - OpenStack: nova-api 2,068 problem lines (2.01%), 91% of all OpenStack problems.
 - Engineer traced KERNRTSP on R27-M0-NA-C:J11-U11 (2006-01-03): KERNMC cache

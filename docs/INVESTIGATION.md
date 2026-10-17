@@ -15,12 +15,13 @@ can be re-checked. Data scope and filters are stated on every result.
 152,182 of those lines (99.6%) fell on a SINGLE day, 2005-06-12.** It is a burst
 — one incident — not a chronic defect. The tools that make this visible are
 `alert_profile` (lines vs. distinct nodes vs. distinct days) and `trend_by_day`.
-The genuinely recurring problems, by days-present, are **KERNRTSP (126 days)**
-and **APPSEV (70 days)**. This "what's loudest ≠ what recurs" distinction is the
-core of the three role answers below — and the engineer then drills into
-**KERNRTSP**, finding its most recent panic (2006-01-03) is **likely** triggered
-by an uncorrectable L2 d-cache parity error on one chip that took down a
-multi-rack job (hypothesis — see the engineer section).
+The most persistent signals, by days-present, are **KERNMC machine checks (144
+days)** and **KERNRTSP rts panics (126 days)**. This "what's loudest ≠ what
+recurs" distinction is the core of the three role answers below — and the
+engineer trace shows a **KERNMC turning into a KERNRTSP panic**: the most recent
+panic (2006-01-03) is **likely** triggered by an uncorrectable L2 d-cache parity
+error on one chip that took down a multi-rack job (hypothesis — see the engineer
+section).
 
 ---
 
@@ -69,6 +70,9 @@ KERNMC→panic signature; confirm whether 172.16.96.116 was reachable at 03:25.
 
 **Real result (whole corpus, 4,747,963 lines, Jun 2005 – Jan 2006):**
 
+BGL has **41 alert categories**; the top rows (and the most persistent one,
+KERNMC) are:
+
 | Category | Lines | Nodes | Days seen | First–last | Owning team |
 |----------|------:|------:|------:|-----------|-------------|
 | KERNDTLB | 152,734 | 541 | 10 | Jun 5 – Nov 28 '05 | Kernel Platform |
@@ -78,19 +82,21 @@ KERNMC→panic signature; confirm whether 172.16.96.116 was reachable at 03:25.
 | KERNTERM | 23,338 | 9,524 | 26 | Jul 1 – Nov 16 '05 | Kernel Platform |
 | KERNREC | 6,145 | 4,609 | 7 | Oct 28 – Dec 17 '05 | Kernel Platform |
 | APPREAD | 5,983 | 512 | 5 | Jun 4 – Jun 20 '05 | Application Runtime |
-| KERNRTSP | 3,983 | 3,394 | **126** | Jun 5 '05 – Jan 3 '06 | Kernel Platform |
+| KERNRTSP | 3,983 | 3,394 | 126 | Jun 5 '05 – Jan 3 '06 | Kernel Platform |
+| **KERNMC** | 342 | 265 | **144** | Jun 5 '05 – Jan 3 '06 | Kernel Platform |
 
 **Answer:** by volume the top category is KERNDTLB, but it is **neither rising nor
 steady** — 99.6% of its lines are on 2005-06-12, then only 30 lines (Jul 18) and
 10 (Nov 28). So it tops volume but barely recurs. The categories that *recur* are
-**KERNRTSP (126 days, still firing on the last day of data)** and **APPSEV (70
-days, across all 1,024 app nodes)**. Ownership: alerts split almost entirely
-between **Kernel Platform** (KERNEL component, 284,344 alert lines) and
-**Application Runtime** (APP, 63,845); category→team is matched by the KERN*/APP*
-prefix, joined on component.
+**KERNMC machine checks (144 days — the most persistent)** and **KERNRTSP rts
+panics (126 days, still active on 2006-01-03, the final day of the data)**, with
+**APPSEV (70 days, on 1,024 distinct nodes)** close behind. Ownership: alerts
+split almost entirely between **Kernel Platform** (KERNEL component, 284,344 alert
+lines) and **Application Runtime** (APP, 63,845); category→team is matched by the
+KERN*/APP* prefix, joined on component.
 
-**Next step:** stand up work items for KERNRTSP and APPSEV (the chronic ones);
-treat KERNDTLB as a one-day incident review.
+**Next step:** stand up work items for KERNMC, KERNRTSP and APPSEV (the chronic
+ones); treat KERNDTLB as a one-day incident review.
 
 ### Manager — "what should we prioritise across BGL and OpenStack, and what next? Measured frequency only."
 
@@ -98,9 +104,9 @@ treat KERNDTLB as a one-day incident review.
 
 **Real result + reasoning:** KERNDTLB tops volume but is one burst, so it is
 **not** the top priority. Ranked by persistence (days present), the standing work
-is KERNRTSP (126 days, still active), APPSEV (70 days), KERNMNTF (26 days, still
-active). Kernel Platform carries ~82% of all BGL alert lines (284,344 of
-348,460); Application Runtime ~18%.
+is KERNMC (144 days), KERNRTSP (126 days, still active on 2006-01-03), APPSEV (70
+days), KERNMNTF (26 days, still active). Kernel Platform carries ~82% of all BGL
+alert lines (284,344 of 348,460); Application Runtime ~18%.
 
 **Full cross-dataset result (after the one-time OpenStack reload — see note):**
 every figure a measured count over the whole corpus (4,747,963 BGL + 207,820
@@ -119,10 +125,11 @@ about 10× nova-compute's rate on similar volume. (These are ERROR/CRITICAL-leve
 or error-keyword lines, **not** the dataset's labelled anomalies.)
 
 **Priorities (ranked within each dataset — see the honesty note):**
-1. BGL Kernel Platform long-running alerts: **KERNRTSP (126 days)** and
-   **KERNMNTF (26 days)**, both still occurring at the end of the data; Kernel
-   Platform owns ~82% of BGL alert lines (284,344 of 348,460).
-2. BGL Application Runtime: **APPSEV** — 49,651 lines on 70 days, all 1,024 nodes.
+1. BGL Kernel Platform long-running alerts: **KERNMC (144 days)**, **KERNRTSP
+   (126 days)** and **KERNMNTF (26 days)**, all still occurring at the end of the
+   data; Kernel Platform owns ~82% of BGL alert lines (284,344 of 348,460).
+2. BGL Application Runtime: **APPSEV** — 49,651 lines on 70 days, on 1,024
+   distinct nodes.
 3. OpenStack API Gateway: **nova-api errors** — 2,068 lines, 2.01%; the clear
    OpenStack priority (though far smaller absolute count than the BGL categories).
 4. **Look back at the bursts but don't treat them as active:** KERNDTLB 99.6% on
@@ -136,8 +143,8 @@ different things — labelled alert lines in BGL, error-matched lines in OpenSta
 scale, not a direct comparison." Exactly the distinction the `error_match`
 naming was built to support.
 
-**Next steps (as given):** kernel-oncall → KERNRTSP + KERNMNTF; apprt-oncall →
-APPSEV; apigw-oncall → break down the 2,068 nova-api problem lines by error type;
+**Next steps (as given):** kernel-oncall → KERNMC + KERNRTSP + KERNMNTF;
+apprt-oncall → APPSEV; apigw-oncall → break down the 2,068 nova-api error lines by type;
 Kernel Platform → short retrospective on the 2005-06-12 KERNDTLB burst; re-run
 the view per period to confirm the patterns hold (BGL via `trend_by_day`,
 OpenStack via the start/end dates).
@@ -214,9 +221,9 @@ the KERNEL component — owned by **Kernel Platform** — accounts for 284,344 o
 alert lines. But volume is not the same as recurrence (next section).
 
 **Answer / next step:** do **not** start with the loudest alert. Rank by spread
-(distinct days present), which shows the genuinely recurring problems are
-**KERNRTSP (126 days)** and **APPSEV (70 days)** — not KERNDTLB. Treat KERNDTLB as
-a one-day incident retrospective (see the trend below).
+(distinct days present), which shows the most persistent problems are
+**KERNMC (144 days)** and **KERNRTSP (126 days)** — not KERNDTLB. Treat KERNDTLB
+as a one-day incident retrospective (see the trend below).
 
 ---
 
@@ -421,9 +428,9 @@ same KERNMC→panic signature or had a different trigger; confirm whether front-
 
 ## Manager — *what should we prioritize, and why?*
 
-**Tool calls:** `alert_profile(limit=50)` — fetch ALL ~12 categories so a
-chronic-but-low-volume alert surfaces — then rank by spread, plus
-`openstack_by_component()`.
+**Tool calls:** `alert_profile(limit=50)` — fetch all 41 categories so a
+chronic-but-low-volume alert (KERNMC, KERNRTSP) surfaces — then rank by spread,
+plus `openstack_by_component()`.
 **OpenStack query:**
 ```sql
 SELECT os.component, COALESCE(o.team,'Unmapped') AS team, COUNT(*) AS total,
@@ -450,10 +457,10 @@ GROUP BY os.component, team ORDER BY error_lines DESC;
 **Prioritized actions — sustained problems (many days) first, then OpenStack,
 then one-day bursts as retrospectives** (matches the recorded Claude session):
 
-1. **BGL Kernel Platform, long-running: KERNRTSP (126 days) + KERNMNTF (26
-   days)** — both still occurring at the end of the data. Kernel Platform owns
-   ~82% of BGL alert lines (284,344 of 348,460). → kernel-oncall.
-2. **BGL APPSEV — 70 days, all 1,024 app nodes → Application Runtime** (apprt-oncall).
+1. **BGL Kernel Platform, long-running: KERNMC (144 days) + KERNRTSP (126 days) +
+   KERNMNTF (26 days)** — all still occurring at the end of the data. Kernel
+   Platform owns ~82% of BGL alert lines (284,344 of 348,460). → kernel-oncall.
+2. **BGL APPSEV — 70 days, on 1,024 distinct nodes → Application Runtime** (apprt-oncall).
 3. **OpenStack nova-api — 2,068 error-keyword lines (2.01%) → API Gateway** — the
    clear OpenStack priority (far smaller absolute count than the BGL categories).
 4. **Look back at the bursts, but don't treat them as active:** KERNDTLB is

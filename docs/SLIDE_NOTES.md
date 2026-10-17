@@ -111,9 +111,10 @@ lines that day weren't time-correlated, so we don't tie them in."
 
 **On slide:**
 - Loudest by volume: **KERNDTLB, 152,734 lines** — but **99.6% on one day (2005-06-12)** → a burst, not a defect
-- Ranked by **spread** (distinct days present), the real recurring problems are:
-  - **KERNRTSP — 126 days**, still active on the last day of data
-  - **APPSEV — 70 days**, across all 1,024 app nodes
+- Ranked by **spread** (distinct days present), the most persistent problems are:
+  - **KERNMC — 144 days** (machine checks; the most persistent of all 41 categories)
+  - **KERNRTSP — 126 days**, still active on 2006-01-03, the final day of the data
+  - **APPSEV — 70 days**, on 1,024 distinct nodes
 - Ownership join: Kernel Platform owns ~82% of BGL alert lines
 
 **Live action:** run the team-lead question; point at the spread table where
@@ -131,7 +132,7 @@ actually keep recurring."
 **Title:** Manager — prioritise by spread + ownership, measured frequency only
 
 **On slide:**
-- Sustained problems first: **KERNRTSP + KERNMNTF (Kernel Platform)**, then **APPSEV (Application Runtime)**
+- Sustained problems first: **KERNMC + KERNRTSP + KERNMNTF (Kernel Platform)**, then **APPSEV (Application Runtime)**
 - Then OpenStack: **nova-api — 2,068 error-keyword lines, 2.01%** (API Gateway)
 - KERNDTLB framed as a **one-day retrospective**, not ongoing work
 - Honest framing: BGL = labelled alerts; OpenStack = *error-keyword* lines, **not** labelled anomalies — ranked within each dataset, not compared directly
