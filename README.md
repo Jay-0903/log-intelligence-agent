@@ -11,6 +11,22 @@ Base corpus: **BGL** (search + trends) and **OpenStack** (aggregation). The data
 does the searching and counting; the agent only ever sees a small, relevant slice
 plus pre-computed summaries — so millions of log lines never have to fit in a prompt.
 
+## The agent, and what was supplied vs. built
+
+- **The real agent is Claude over MCP** — it selects and calls the tools, which is
+  what the brief asks for. See a recorded Claude session (one question per role,
+  showing the tools it chose) in [`docs/INVESTIGATION.md`](docs/INVESTIGATION.md).
+- **`agent.py` is a deterministic, no-API-key fallback** that calls the same tools
+  in fixed per-role sequences, so the workflow is reproducible for judges without a
+  model. It is a demo harness, not "the agent." (Note: for the team-lead/manager
+  roles it runs a fixed report regardless of the exact question wording.)
+- **Supplied vs. built:** the organiser Q&A confirmed **no** loader, schema,
+  ownership table or hosted instance were supplied — the brief's "what you get" was
+  aspirational. So this repo **builds its own**: `load_logs.py` (loader),
+  `schema.py` (schema + a self-defined `component_owners` ownership table), and
+  SereneDB runs locally in Docker. Point it at a provided instance by setting
+  `SERENEDB_HOST`/`SERENEDB_PORT` if one is given.
+
 ---
 
 ## Why this design
@@ -143,11 +159,11 @@ then `get_nearby_events`.
 **Verify the MCP connection (quick check):**
 
 1. Restart Claude Desktop / Claude Code after editing the config.
-2. Confirm the `log-intelligence` server appears and lists **11 tools**
+2. Confirm the `log-intelligence` server appears and lists **13 tools**
    (`corpus_scope`, `team_ownership`, `search_logs_fulltext`,
-   `get_nearby_events`, `alert_categories`, `alert_profile`,
+   `get_nearby_events`, `request_trace`, `alert_categories`, `alert_profile`,
    `top_nodes_for_alert`, `count_alerts_by_team`, `trend_by_day`,
-   `openstack_by_component`, `latency_stats`).
+   `openstack_by_component`, `latency_stats`, plus the optional `otel_*` tools).
 3. Ask: *"Call corpus_scope"* — you should get BGL/OpenStack line counts back.
 4. Then run one question per role (see `docs/DEMO.md`).
 
@@ -166,14 +182,15 @@ ran), `rows`, `count`, `truncated`, `limit`.
 | `corpus_scope` | any | – | line counts per dataset (state scope first) |
 | `team_ownership` | any | – | the component → team ownership table |
 | `search_logs_fulltext` | engineer | `dataset`, `phrase`, `limit`, `start`/`end` (time filter) | BM25-ranked matching log lines with `score` |
-| `get_nearby_events` | engineer | `ts` (unix), `window_seconds`, `limit` | BGL lines around a moment, in time order |
+| `get_nearby_events` | engineer | `ts` (unix), `window_seconds`, `limit`, `node` | BGL lines around a moment, in time order (optional node filter) |
+| `request_trace` | engineer | `request_id`, `limit` | all OpenStack lines for one request, in time order (request lifecycle) |
 | `alert_categories` | team lead | `limit`, `start`/`end` (period) | BGL counts per alert category (whole corpus by default) |
 | `alert_profile` | team lead / manager | `limit`, `start`/`end` | per category: lines, distinct nodes, distinct days, first/last seen (spread, not raw count) |
 | `top_nodes_for_alert` | team lead / engineer | `category`, `limit`, `start`/`end` | nodes with the most lines of a category (names for concrete next steps) |
 | `count_alerts_by_team` | team lead | `limit`, `start`/`end` (period) | BGL events grouped by owning team/component |
 | `trend_by_day` | team lead / manager | `category`, `limit`, `start`/`end` | BGL alert volume per calendar day (trend) |
-| `openstack_by_component` | team lead / manager | `start`/`end` (period) | OpenStack per-service totals, problem %, avg latency, owning team |
-| `latency_stats` | manager / team lead | – | per-service request latency count/avg/min/max |
+| `openstack_by_component` | team lead / manager | `start`/`end` (period) | OpenStack per-service totals, **error-keyword** rate (not labelled anomalies), avg latency, owning team |
+| `latency_stats` | manager / team lead | – | per-service latency distribution: count/avg/min/**p50/p95/p99**/max |
 
 **Retrieval** = `search_logs_fulltext`, `get_nearby_events`.
 **Aggregation over the whole corpus** = `alert_categories`, `count_alerts_by_team`,
