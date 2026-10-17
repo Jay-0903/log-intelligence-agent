@@ -210,13 +210,14 @@ GROUP BY team, b.component ORDER BY alert_events DESC, events DESC LIMIT 8;
 | Provisioning | DISCOVERY | 0 | 97,172 |
 | Hardware Ops | HARDWARE | 0 | 5,148 |
 
-**Observed:** KERNDTLB is the single most frequent alert (152,734). The KERNEL
-component — owned by **Kernel Platform** — accounts for 284,344 of all alert
-lines, by far the most. APP (Application Runtime) is a distant second (63,845).
+**Observed:** KERNDTLB is the single loudest alert by volume (152,734 lines), and
+the KERNEL component — owned by **Kernel Platform** — accounts for 284,344 of all
+alert lines. But volume is not the same as recurrence (next section).
 
-**Answer / next step:** Kernel Platform owns the largest share of alerts; have
-them review KERNDTLB first. But before committing effort, check whether it is a
-steady background rate or a one-off — use the trend tool (below).
+**Answer / next step:** do **not** start with the loudest alert. Rank by spread
+(distinct days present), which shows the genuinely recurring problems are
+**KERNRTSP (126 days)** and **APPSEV (70 days)** — not KERNDTLB. Treat KERNDTLB as
+a one-day incident retrospective (see the trend below).
 
 ---
 
@@ -254,62 +255,22 @@ points at an event (a node/rack incident that day), not an ongoing defect.
 
 ---
 
-## Engineer — *drill into the burst itself*
+## Engineer
 
-The team-lead view found the burst was KERNDTLB on **2005-06-12**. The engineer
-now investigates **that specific burst** — same thread, not an unrelated error.
-
-**Tool call:** `search_logs_fulltext(dataset="bgl", phrase="KERNDTLB TLB",
-start="2005-06-12", end="2005-06-13")` — full-text, scoped to the burst day.
-**Query:**
-```sql
-SELECT id, alert, ts, node, event_time AS "datetime", severity, component,
-       message, ROUND(BM25(bgl_idx.tableoid)::NUMERIC,3) AS score
-FROM bgl_idx
-WHERE (message @@ ts_phrase('KERNDTLB') OR message @@ ts_phrase('TLB'))
-  AND ts >= <2005-06-12> AND ts <= <2005-06-13>
-ORDER BY score DESC LIMIT 15;
-```
-*(Fill the exact top rows from your run.)*
-
-**Tool call:** `top_nodes_for_alert(category="KERNDTLB", start="2005-06-12",
-end="2005-06-13", limit=5)` — which nodes drove the burst.
-**Query:**
-```sql
-SELECT node, COUNT(*) AS lines FROM bgl_logs
-WHERE alert = 'KERNDTLB' AND ts > 0 AND ts >= <...> AND ts <= <...>
-GROUP BY node ORDER BY lines DESC, node LIMIT 5;
-```
-*(Fill the top nodes + counts from your run — these are the concrete nodes to
-inspect.)*
-
-**Tool call:** `get_nearby_events(ts=<a KERNDTLB hit's ts>, window_seconds=60,
-node=<that node>)` — what co-occurred on that node during the burst.
-**Query:**
-```sql
-SELECT id, alert, ts, node, event_time AS "datetime", severity, component, message
-FROM bgl_logs
-WHERE ts > 0 AND ts BETWEEN %s AND %s AND node = %s
-ORDER BY ts, id LIMIT %s;
-```
-
-**Observed:** on 2005-06-12 the KERNDTLB alerts concentrate on a small set of
-nodes (from `top_nodes_for_alert`); the per-node nearby window shows what else
-fired on those nodes during the burst.
-
-**Hypothesis (not confirmed):** a localised event on those nodes on 2005-06-12,
-not a fleet-wide chronic defect. The logs establish *where* and *when*, not the
-root cause.
-
-**Next step:** hand Kernel Platform the specific nodes + the 2005-06-12 window;
-check whether those nodes share a rack/midplane (the node IDs encode position).
+The engineer investigation is the real Claude-over-MCP session recorded at the
+top of this doc ("Agent tool-selection evidence → Engineer"): a full-text search
+for the parity error, then node-scoped `get_nearby_events`, which localised it to
+one node (`R63-M0-N3-C:J02-U11`) across two nightly bursts and ruled out a
+cluster-wide cause. That is the engineer thread; the team-lead/manager sections
+below use aggregation over the whole corpus to find the burst-vs-chronic pattern.
 
 ---
 
 ## Manager — *what should we prioritize, and why?*
 
-**Tool calls:** `alert_profile(limit=5)` (spread, not raw count) +
-`openstack_by_component()`
+**Tool calls:** `alert_profile(limit=50)` — fetch ALL ~12 categories so a
+chronic-but-low-volume alert surfaces — then rank by spread, plus
+`openstack_by_component()`.
 **OpenStack query:**
 ```sql
 SELECT os.component, COALESCE(o.team,'Unmapped') AS team, COUNT(*) AS total,
@@ -333,19 +294,24 @@ GROUP BY os.component, team ORDER BY error_lines DESC;
 > (`anomaly_labels.txt` is not inline in the raw logs). Reported as an
 > error-keyword rate.
 
-**Prioritized actions — ranked by SPREAD (sustained before burst), correct owners:**
+**Prioritized actions — sustained problems (many days) first, then OpenStack,
+then one-day bursts as retrospectives** (matches the recorded Claude session):
 
-1. **BGL KERNSTOR — 63,491 lines, SUSTAINED over many days → Kernel Platform.**
-   A chronic multi-day problem ranks above a one-day burst.
-2. **BGL APPSEV — 49,651 lines → Application Runtime.** (Correctly the
-   application team, not kernel — see routing in `tools.team_for_bgl_alert`.)
-3. **BGL KERNDTLB — 152,734 lines but a one-day BURST (2005-06-12) → Kernel
-   Platform.** Highest raw count, yet it is a single incident, so it is framed as
-   "investigate that day," not "chronic defect." *(Verify the exact day-counts
-   from `alert_profile` in your run and adjust the order accordingly.)*
-4. **OpenStack nova-api — 2,068 error-keyword lines (2.01%) → API Gateway.**
-   Highest of the nova services; avg latency 234 ms.
-5. **OpenStack nova-compute — 204 error-keyword lines (0.20%) → Compute.** Low.
+1. **BGL Kernel Platform, long-running: KERNRTSP (126 days) + KERNMNTF (26
+   days)** — both still occurring at the end of the data. Kernel Platform owns
+   ~82% of BGL alert lines (284,344 of 348,460). → kernel-oncall.
+2. **BGL APPSEV — 70 days, all 1,024 app nodes → Application Runtime** (apprt-oncall).
+3. **OpenStack nova-api — 2,068 error-keyword lines (2.01%) → API Gateway** — the
+   clear OpenStack priority (far smaller absolute count than the BGL categories).
+4. **Look back at the bursts, but don't treat them as active:** KERNDTLB is
+   152,734 lines but **99.6% on one day (2005-06-12)**, and KERNSTOR appears on
+   only 4 days. Run a retrospective, not a standing work item. → Kernel Platform.
+5. **Monitor only:** nova-compute (0.20%), nova-scheduler (0 of 866), and the
+   small BGL Interconnect / Control System / Observability components.
+
+**Cross-dataset honesty:** the two datasets measure different things — labelled
+alert lines in BGL, error-keyword lines in OpenStack — so we rank within each
+dataset and treat raw counts as a rough guide to scale, not a direct comparison.
 
 **What the data does NOT establish:** counts of **matching log lines, not
 confirmed incidents**; no financial loss, downtime or customer impact. OpenStack
@@ -359,9 +325,9 @@ ownership**.
 
 | Role | Evidence selected | Decision |
 |------|-------------------|----------|
-| Engineer | full-text hit + ±60s nearby events on one node | drill into one corrected parity event; widen window |
-| Team Lead | whole-corpus category counts + team rollup + trend | route KERNDTLB to Kernel Platform, but confirm it is one day |
-| Manager | top categories + OpenStack error rates, each routed to its owner | ranked priorities with correct owners; no invented impact |
+| Engineer | full-text hit → node-scoped nearby events | localised corrected parity errors to node `R63-M0-N3-C:J02-U11` over two nightly bursts; flag that part for diagnostics |
+| Team Lead | whole-corpus `alert_profile` (lines vs nodes vs days) + team rollup + trend | the loudest alert (KERNDTLB) spans 1 day; the recurring ones are KERNRTSP (126d) & APPSEV (70d) → route those to their teams |
+| Manager | all categories ranked by spread + OpenStack error rates, each routed to its owner | sustained problems first (KERNRTSP/KERNMNTF, APPSEV), nova-api next, KERNDTLB as a one-day retrospective; no invented impact |
 
 Same tools, same data — different questions, different evidence, different
 next steps.

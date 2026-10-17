@@ -54,15 +54,16 @@ def _envelope(tool, scope, filters, sql, rows, limit):
 
 
 MAX_LIMIT = 200          # judges look for useful bounds on returned results
+MAX_TREND_LIMIT = 1000   # trends legitimately span many days/weeks
 
 
-def _clamp_limit(limit, default=20):
-    """Keep result limits in a sane, useful range (1..MAX_LIMIT)."""
+def _clamp_limit(limit, default=20, max_limit=MAX_LIMIT):
+    """Keep result limits in a sane, useful range (1..max_limit)."""
     try:
         n = int(limit)
     except (TypeError, ValueError):
         return default
-    return max(1, min(n, MAX_LIMIT))
+    return max(1, min(n, max_limit))
 
 
 def _count(table, where="", params=None):
@@ -254,6 +255,7 @@ def count_bgl_alerts_by_team(limit=20, start=None, end=None):
     'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period instead.
     Output: team, component, events, alert_events.
     """
+    limit = _clamp_limit(limit)
     tw, tp, period = _time_clause("b.ts", start, end)
     sql = f"""
         SELECT COALESCE(o.team, 'Unmapped') AS team,
@@ -279,6 +281,7 @@ def count_bgl_alert_categories(limit=20, start=None, end=None):
     """TOOL (team lead): BGL alert-category counts (the 12 labelled categories;
     '-' = normal excluded). Default scope is the WHOLE corpus; pass start/end
     to count over a stated period."""
+    limit = _clamp_limit(limit)
     tw, tp, period = _time_clause("ts", start, end)
     sql = f"""
         SELECT alert AS category, COUNT(*) AS n
@@ -302,6 +305,7 @@ def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
             start/end (optional period; default = whole corpus).
     Output: date, alert_events per day (trend).
     """
+    limit = _clamp_limit(limit, default=400, max_limit=MAX_TREND_LIMIT)
     where = "ts > 0"
     params = []
     if category:
@@ -338,6 +342,7 @@ def bgl_trend_by_week(category=None, limit=60, start=None, end=None):
 
     Uses date_trunc('week', to_timestamp(ts)) — confirmed against the SereneDB
     docs (sql/functions/timestamp; alias datetrunc, time_bucket also available)."""
+    limit = _clamp_limit(limit, default=60, max_limit=MAX_TREND_LIMIT)
     where = "ts > 0"
     params = []
     if category:
@@ -490,13 +495,17 @@ def openstack_request_trace(request_id, limit=50):
 
 def bgl_alert_profile(limit=8, start=None, end=None):
     """TOOL (team lead/manager): per BGL alert category, a one-GROUP-BY profile
-    showing SPREAD, not just raw line counts:
+    showing SPREAD, not just raw line counts.
       lines, distinct_nodes, distinct_days, first_seen, last_seen.
 
     This supports the brief's guidance: matching lines are not incidents, so
     report affected scope ('N lines on D nodes over K days') rather than
     treating each line as a separate incident. Default scope is the whole
-    corpus; pass start/end to profile over a stated period."""
+    corpus; pass start/end to profile over a stated period.
+
+    `limit` is clamped (BGL has 12 alert categories; pass limit>=12 to get them
+    all for spread-ranking)."""
+    limit = _clamp_limit(limit, default=12)
     tw, tp, period = _time_clause("ts", start, end)
     sql = f"""
         SELECT alert AS category,
@@ -522,6 +531,7 @@ def bgl_top_nodes_for_alert(category, limit=5, start=None, end=None):
     """TOOL (engineer/team lead): the nodes with the most lines of a given BGL
     alert category — so a recommendation can name concrete nodes to inspect
     first. Returns node + line count, highest first."""
+    limit = _clamp_limit(limit, default=5)
     tw, tp, period = _time_clause("ts", start, end)
     sql = f"""
         SELECT node, COUNT(*) AS lines

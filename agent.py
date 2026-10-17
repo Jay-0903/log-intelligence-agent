@@ -153,10 +153,16 @@ def answer_team_lead(question):
     """Which problems recur, how often, and which teams own them."""
     out = ["TEAM LEAD — recurring patterns & ownership", ""]
 
-    prof = tools.bgl_alert_profile(limit=8)
-    out.append("OBSERVED — BGL alert categories, whole corpus — SPREAD not just "
-               "raw count (lines / distinct nodes / distinct days / first..last):")
-    out += _fmt_rows(prof["rows"],
+    # Fetch ALL ~12 categories so the "most recurring" (by days) is visible even
+    # if it is low by volume (e.g. KERNRTSP: 126 days but only ~4k lines).
+    prof = tools.bgl_alert_profile(limit=50)
+    def _days_key(r):
+        return (r.get("distinct_days") or 0, r.get("distinct_nodes") or 0,
+                r.get("lines") or 0)
+    by_days = sorted(prof["rows"], key=_days_key, reverse=True)
+    out.append("OBSERVED — BGL alert categories, whole corpus — ranked by SPREAD "
+               "(distinct days present), because one line is not one incident:")
+    out += _fmt_rows(by_days,
                      ["category", "lines", "distinct_nodes", "distinct_days",
                       "first_seen", "last_seen"],
                      [10, 9, 8, 7, 11, 11])
@@ -180,22 +186,22 @@ def answer_team_lead(question):
         out.append(_provenance(osc))
 
     if prof["rows"]:
-        top = prof["rows"][0]
-        top_cat = top["category"]
-        top_team = tools.team_for_bgl_alert(top_cat)
-        nodes = tools.bgl_top_nodes_for_alert(top_cat, limit=3)["rows"]
+        loudest = max(prof["rows"], key=lambda r: r.get("lines") or 0)
+        recurring = by_days[0]                      # most days present
+        rec_team = tools.team_for_bgl_alert(recurring["category"])
+        nodes = tools.bgl_top_nodes_for_alert(recurring["category"], limit=3)["rows"]
         node_list = ", ".join(n["node"] for n in nodes) or "the affected nodes"
-        spread = (f"{top['lines']:,} lines on {top['distinct_nodes']} nodes "
-                  f"over {top['distinct_days']} day(s) "
-                  f"({top['first_seen']}..{top['last_seen']})")
         out += ["",
-                f"HYPOTHESIS — '{top_cat}' is the dominant recurring BGL alert "
-                f"({spread}); it maps to the '{top_team}' team. The spread shows "
-                "whether this is chronic (many days) or a single incident (one day).",
-                f"NEXT STEP — ask {top_team} to inspect nodes {node_list} first "
-                f"(the heaviest sources of '{top_cat}'); use trend_by_day on that "
-                "category to confirm whether it is rising or a one-off before "
-                "committing effort."]
+                f"HYPOTHESIS — the LOUDEST alert '{loudest['category']}' "
+                f"({loudest['lines']:,} lines) is misleading: it spans only "
+                f"{loudest['distinct_days']} day(s). The alert that actually "
+                f"RECURS is '{recurring['category']}' — {recurring['distinct_days']} "
+                f"days ({recurring['first_seen']}..{recurring['last_seen']}), "
+                f"{recurring['distinct_nodes']} nodes — owned by '{rec_team}'.",
+                f"NEXT STEP — stand up a work item for '{recurring['category']}' "
+                f"with {rec_team}; inspect nodes {node_list} first, and use "
+                "trend_by_day to confirm it is still active. Treat the loud "
+                "one-day categories as incident retrospectives, not ongoing work."]
     return "\n".join(out)
 
 
@@ -206,16 +212,26 @@ def answer_manager(question):
     """What deserves attention first and why — measured frequency only."""
     out = ["MANAGER — prioritized risks (measured frequency only)", ""]
 
-    prof = tools.bgl_alert_profile(limit=5)
+    # Fetch ALL ~12 BGL alert categories so spread-ranking can surface a chronic
+    # alert (e.g. KERNRTSP) that is low by volume but present on many days.
+    prof = tools.bgl_alert_profile(limit=50)
+    all_rows = prof["rows"]
     scope = tools.corpus_scope()
     bgl_n = scope.get("BGL")
     os_n = scope.get("OpenStack")
     os_txt = f"{os_n} lines" if os_n else "not loaded"
     out.append(f"DATA SCOPE — BGL: {bgl_n} lines; OpenStack: {os_txt} "
                "(whole corpus).")
-    out += ["", "OBSERVED — top BGL alerts by SPREAD (lines / nodes / days / "
-            "first..last), not raw count alone:"]
-    out += _fmt_rows(prof["rows"],
+
+    # Rank ALL categories by spread (days present, then nodes), not by volume.
+    def _spread_key(r):
+        return (r.get("distinct_days") or 0, r.get("distinct_nodes") or 0,
+                r.get("lines") or 0)
+    by_spread = sorted(all_rows, key=_spread_key, reverse=True)
+
+    out += ["", "OBSERVED — BGL alerts ranked by SPREAD (days present, then "
+            "nodes) — this is how we prioritise, NOT by raw line count:"]
+    out += _fmt_rows(by_spread,
                      ["category", "lines", "distinct_nodes", "distinct_days",
                       "first_seen", "last_seen"],
                      [10, 9, 8, 7, 11, 11])
@@ -233,41 +249,41 @@ def answer_manager(question):
                          [16, 14, 11, 9])
         out.append(_provenance(osc))
 
-    out += ["", "PRIORITIZED ACTIONS — ranked by SPREAD (sustained problems "
-            "before one-day bursts), each with concrete nodes:"]
-    # Rank by spread: sustained (many days) outrank single-day bursts, then by
-    # affected nodes, then by raw lines. This avoids ranking a one-day burst
-    # above a chronic multi-day problem purely on raw count.
-    def _spread_key(r):
-        days = r.get("distinct_days") or 0
-        nodes = r.get("distinct_nodes") or 0
-        return (days > 1, days, nodes, r.get("lines") or 0)
-    ranked = sorted(prof["rows"][:5], key=_spread_key, reverse=True)[:3]
+    out += ["", "PRIORITIZED ACTIONS — sustained problems (many days) first, "
+            "then OpenStack, then one-day bursts as retrospectives:"]
+    # Split ALL categories into sustained (>1 day) vs bursts (1 day). Sustained
+    # ranked by days then nodes; bursts listed after as incident reviews.
+    sustained = [r for r in by_spread if (r.get("distinct_days") or 0) > 1]
+    bursts = [r for r in by_spread if (r.get("distinct_days") or 0) == 1]
     rank = 1
-    for row in ranked:
+    for row in sustained[:3]:
         cat = row["category"]
         team = tools.team_for_bgl_alert(cat)
         nodes = tools.bgl_top_nodes_for_alert(cat, limit=3)["rows"]
         node_list = ", ".join(n["node"] for n in nodes) or "affected nodes"
-        one_day = row["distinct_days"] == 1
-        if one_day:
-            shape = (f"BURST — concentrated on ONE day ({row['first_seen']}); "
-                     "treat as a single incident to investigate, not a chronic defect")
-        else:
-            shape = (f"SUSTAINED — {row['distinct_days']} days "
-                     f"({row['first_seen']}..{row['last_seen']})")
         out.append(
-            f"  {rank}. BGL '{cat}' — {row['lines']:,} lines on "
-            f"{row['distinct_nodes']} nodes. {shape}. Route to {team}; "
+            f"  {rank}. BGL '{cat}' — SUSTAINED: {row['distinct_days']} days "
+            f"({row['first_seen']}..{row['last_seen']}), {row['distinct_nodes']} "
+            f"nodes, {row['lines']:,} lines. Route to {team}; "
             f"inspect nodes {node_list} first.")
         rank += 1
     if not _unavailable(osc):
-        for row in osc["rows"][:2]:
+        for row in osc["rows"][:1]:
             if row.get("error_lines"):
                 out.append(f"  {rank}. OpenStack {row['component']} — "
                            f"{row['error_lines']} error-keyword lines "
                            f"({row['error_pct']}%). Owner: {row['team']}.")
                 rank += 1
+    for row in bursts[:1]:
+        cat = row["category"]
+        team = tools.team_for_bgl_alert(cat)
+        out.append(
+            f"  {rank}. BGL '{cat}' — BURST: {row['lines']:,} lines but "
+            f"concentrated on ONE day ({row['first_seen']}). Treat as an "
+            f"incident retrospective, not an ongoing problem. Owner: {team}.")
+        rank += 1
+    out.append(f"  {rank}. Monitor only: low-rate OpenStack services and small "
+               "BGL components (Interconnect / Control System / Observability).")
 
     out += ["",
             "NOTE — these are counts of matching log lines, not confirmed incidents, "
