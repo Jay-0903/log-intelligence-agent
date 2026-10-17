@@ -1,7 +1,11 @@
 # Slides Outline — Log Intelligence Agent
 
-Suggested 8 slides for a ≤5-minute presentation. Each slide lists the headline,
+Suggested 9 slides for a ≤5-minute presentation. Each slide lists the headline,
 the key points, and what to show live. Export to your deck tool of choice.
+
+> **Ready to paste:** `docs/SLIDE_NOTES.md` has complete, copy-ready slide copy
+> (title + bullets + live action + speaker notes) with the real full-corpus
+> numbers — assemble the deck from that; this file is the shorter outline.
 
 ---
 
