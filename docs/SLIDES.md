@@ -52,16 +52,17 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 
 ---
 
-## Slide 5 — Engineer (live, from the real Claude/MCP session)
+## Slide 5 — Engineer (live, same thread: investigate the alert the team lead flagged)
 
-- Question: *"investigate kernel instruction cache parity errors; show lines +
-  what happened before/after."*
-- Claude chose `search_logs_fulltext` → `get_nearby_events` (node-scoped).
-- Found: all hits on **one node `R63-M0-N3-C:J02-U11`**, INFO/corrected, in
-  **two nightly bursts**; cluster-wide windows returned only this node → rules
-  out a shared midplane/power event.
-- Hypothesis: marginal L1 i-cache part (not cosmic-ray). Next step: flag that
-  node for diagnostics/replacement. Explicitly: no confirmed root cause.
+- Team lead/manager prioritised **KERNRTSP** (126 days) → engineer investigates it.
+- Claude chose `search_logs_fulltext("rts panic")` → `top_nodes_for_alert` →
+  `get_nearby_events` (node-scoped).
+- Traced the latest occurrence on `R27-M0-NA-C:J11-U11` (2006-01-03): a tight
+  ~20s chain — **KERNMC L2 d-cache machine check → rts panic → "link severed"**
+  on I/O nodes (racks R20–R27) all to front-end 172.16.96.116.
+- **Hypothesis** (not fact): a hardware cache fault the runtime couldn't ride
+  through. Next step: flag the node for diagnostics. Logs show the sequence, not
+  the root cause.
 
 ---
 

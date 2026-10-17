@@ -28,41 +28,44 @@ MCP server**, choosing and calling the tools itself (every answer is tagged
 "Used Log-intelligence"). This is the agent the brief asks for; `agent.py` is a
 deterministic, no-API-key reproduction of the same tool calls.
 
-### Engineer — "investigate kernel instruction cache parity errors; show matching lines and what happened before/after"
+### Engineer — "investigate KERNRTSP (the recurring alert the team lead flagged); show matching lines and what happened before/after"
 
-**Tools Claude chose:** `search_logs_fulltext` (BGL) → `get_nearby_events`
-(node-scoped, multiple windows).
+**Tools Claude chose:** `search_logs_fulltext` (BGL, "rts panic") →
+`top_nodes_for_alert(category="KERNRTSP")` → `get_nearby_events` (node-scoped).
 
-**What it found (real result):** every "instruction cache parity error corrected"
-line was on **one node, `R63-M0-N3-C:J02-U11`**, logged at INFO, labelled
-non-alert (hardware corrected each one). It identified **two separate nightly
-bursts**:
+**What it found (real result):** KERNRTSP is **3,983 lines across 3,394 nodes
+over 126 days** — low volume, very wide, persistent (hence the recurring one).
+About **half the lines are a single mass event on 2005-06-14**; the rest are
+scattered, the most recent on **2006-01-03**. Top node for KERNRTSP overall:
+`R63-M0-NE-C:J12-U01` (22 lines).
 
-| Burst | Window | Pattern |
-|-------|--------|---------|
-| 1 | before 2005-11-04 23:58 → 2005-11-05 03:39:15 | steady, ~1–3 min apart, ≥3.7 hours |
-| 2 | 2005-11-06 05:06:22 → ≥06:32:26 | same cadence; nothing on the node in the 30 min before |
+Tracing the most recent occurrence (2006-01-03, node `R27-M0-NA-C:J11-U11`) with
+node-scoped `get_nearby_events` showed a clear sequence after a quiet hour:
 
-**How it reasoned (from the evidence, not invented):**
-- On the node: nothing but parity corrections in each window — no DDR errors, no
-  machine checks, no FATAL lines, no job/app failures around the bursts.
-- Across the cluster: ±2 min / ±5 min / ±1 h windows returned only this node's
-  lines → rules out a shared midplane/power event.
-- Dismissed unrelated noise: December "ddr error(s) ... corrected" on other nodes
-  (R45, R65, R30, …) are separate memory errors weeks later, not connected.
+| Time | Event | Meaning |
+|------|-------|---------|
+| 03:24:46 | **KERNMC** — L2 d-cache parity machine check | hardware cache error |
+| 03:25:05 | **rts panic** (KERNRTSP) | runtime supervisor panics ~19s later |
+| 03:25:06+ | **APPSEV "link severed"** on I/O nodes, racks **R20–R27** | apps lose their link, all to front-end **172.16.96.116** |
 
-**Answer (engineering read):** a persistent/degrading soft fault in the L1
-instruction cache of one compute chip (J02-U11 on node card N3, midplane R63-M0).
-Hardware parity corrects each error, so nothing *failed* — but it recurs every
-few minutes for hours on two nights, which is typical of a **marginal part**, not
-random cosmic-ray upsets.
+**How it reasoned (from the evidence, not invented):** a cache-parity machine
+check immediately precedes the panic, which is immediately followed by a cluster
+of "link severed" app errors on I/O nodes talking to one front-end address — a
+tight causal-looking chain in ~20 seconds.
 
-**Next step:** flag `R63-M0-N3-C:J02-U11` for a diagnostic run or replacement
-before the correction rate worsens or becomes uncorrectable.
+**Answer (engineering read, HYPOTHESIS not fact):** looks like a **hardware
+fault** — an L2 d-cache parity error the runtime couldn't ride through, panicking
+and cascading link losses. The logs establish the *sequence and timing*, not the
+root cause.
 
-**What the data does NOT establish:** no confirmed root cause or hardware RMA —
-"marginal part" is a hypothesis consistent with the cadence; the logs show
-corrected symptoms only.
+**Next step:** flag `R27-M0-NA-C:J11-U11` and the top node
+`R63-M0-NE-C:J12-U01` for a hardware diagnostic; check whether the 2005-06-14
+mass event shares the KERNMC→panic signature; confirm whether front-end
+172.16.96.116 was reachable at 03:25.
+
+**What the data does NOT establish:** "hardware fault" is a hypothesis consistent
+with the KERNMC→panic→link-severed sequence; the logs cannot confirm the cache
+error *caused* the panic (vs. a shared upstream cause).
 
 ### Team Lead — "which BGL alert categories recur most, which teams own them, and is the top one rising or steady?"
 
@@ -255,14 +258,48 @@ points at an event (a node/rack incident that day), not an ongoing defect.
 
 ---
 
-## Engineer
+## Engineer — *investigate KERNRTSP, the alert the team lead flagged*
 
-The engineer investigation is the real Claude-over-MCP session recorded at the
-top of this doc ("Agent tool-selection evidence → Engineer"): a full-text search
-for the parity error, then node-scoped `get_nearby_events`, which localised it to
-one node (`R63-M0-N3-C:J02-U11`) across two nightly bursts and ruled out a
-cluster-wide cause. That is the engineer thread; the team-lead/manager sections
-below use aggregation over the whole corpus to find the burst-vs-chronic pattern.
+This is the same thread: the team lead / manager prioritised **KERNRTSP** (126
+days, still active) over the loud one-day KERNDTLB burst, and handed it to the
+engineer. The engineer drills into KERNRTSP with the tools (real Claude-over-MCP
+session).
+
+**Tools Claude chose:** `search_logs_fulltext` (BGL, "rts panic") +
+`top_nodes_for_alert(category="KERNRTSP")` + `get_nearby_events` (node-scoped).
+
+**Scope / spread (from `alert_profile`):** KERNRTSP = **3,983 lines across 3,394
+nodes over 126 days** — low volume, very wide and persistent, which is why it is
+the recurring problem to chase, not a one-off. About **half the lines fall on a
+single mass event, 2005-06-14**; the rest are scattered through the run, the most
+recent on **2006-01-03** (the last day of data).
+
+**Most-recent occurrence traced (2006-01-03, node `R27-M0-NA-C:J11-U11`):**
+
+| Time | Event | Meaning |
+|------|-------|---------|
+| (quiet hour before) | nothing on the node | baseline |
+| 03:24:46 | **KERNMC** — L2 d-cache parity machine check | a hardware-level cache error |
+| 03:25:05 | **rts panic** (KERNRTSP) | the runtime supervisor panics ~19s later |
+| 03:25:06+ | **APPSEV "link severed"** on I/O nodes in racks **R20–R27** | downstream apps lose their link, all to front-end **172.16.96.116** |
+
+**Top node for KERNRTSP overall:** `R63-M0-NE-C:J12-U01` (22 lines).
+
+**Observed sequence:** a cache-parity machine check immediately precedes the rts
+panic, which is immediately followed by a cluster of "link severed" app errors on
+I/O nodes talking to one front-end address.
+
+**Hypothesis (NOT a fact):** this looks like a **hardware fault** — an L2 d-cache
+parity error (KERNMC) that the runtime could not ride through, triggering the
+panic and cascading link losses to the front-end. The logs establish the
+*sequence and timing*, not the root cause: we cannot confirm from logs alone
+whether the cache error caused the panic or both share an upstream cause.
+
+**Next step:** flag node `R27-M0-NA-C:J11-U11` (and the top node
+`R63-M0-NE-C:J12-U01`) for a hardware diagnostic; check whether the 2005-06-14
+mass event shares the same KERNMC→panic signature or is a different trigger; have
+the I/O-node owners confirm whether front-end 172.16.96.116 was reachable at
+03:25.
 
 ---
 
@@ -325,7 +362,7 @@ ownership**.
 
 | Role | Evidence selected | Decision |
 |------|-------------------|----------|
-| Engineer | full-text hit → node-scoped nearby events | localised corrected parity errors to node `R63-M0-N3-C:J02-U11` over two nightly bursts; flag that part for diagnostics |
+| Engineer | full-text ("rts panic") → top nodes → node-scoped nearby events | traced KERNRTSP on `R27-M0-NA-C:J11-U11` (2006-01-03): KERNMC cache machine-check → rts panic → "link severed" on I/O nodes; flag for hardware diagnostic (hypothesis) |
 | Team Lead | whole-corpus `alert_profile` (lines vs nodes vs days) + team rollup + trend | the loudest alert (KERNDTLB) spans 1 day; the recurring ones are KERNRTSP (126d) & APPSEV (70d) → route those to their teams |
 | Manager | all categories ranked by spread + OpenStack error rates, each routed to its owner | sustained problems first (KERNRTSP/KERNMNTF, APPSEV), nova-api next, KERNDTLB as a one-day retrospective; no invented impact |
 

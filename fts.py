@@ -90,16 +90,36 @@ def refresh(table):
 
 
 def fts_available(index_name):
-    """Return True if a BM25 query against the index works."""
+    """Return (ok, error). ok=True if a BM25 query against the index works;
+    otherwise error holds the real exception text. Checked PER CALL (no caching)
+    so a reload in another session can't leave a stale 'unavailable' verdict."""
     try:
         query(f"SELECT BM25({index_name}.tableoid) AS s "
               f"FROM {index_name} LIMIT 1")
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        return False, str(e).splitlines()[0] if str(e) else repr(e)
 
 
 import re as _re
+
+
+def render_sql(sql, params):
+    """Substitute %s placeholders with their bound values for DISPLAY, robustly.
+
+    Splits on %s and interleaves values, so a value that itself contains '%s'
+    or '%' can't corrupt later substitutions (the bug the sequential .replace()
+    approach had). Strings are quoted; others str()'d. Not for execution."""
+    parts = sql.split("%s")
+    out = [parts[0]]
+    for i, val in enumerate(params):
+        lit = repr(val) if isinstance(val, str) else str(val)
+        out.append(lit)
+        out.append(parts[i + 1] if i + 1 < len(parts) else "")
+    # If there were more %s than params, keep the remaining template text.
+    if len(params) + 1 < len(parts):
+        out.append("%s".join(parts[len(params) + 1:]))
+    return "".join(out)
 
 
 _MAX_TERMS = 12
@@ -155,8 +175,4 @@ def search(index_name, text_col, phrase, select_cols, limit=20, mode="any",
     sql = (f"SELECT {cols}, {bm25} FROM {index_name} "
            f"WHERE {where} ORDER BY score DESC LIMIT %s")
     rows = query(sql, params)
-
-    shown = sql
-    for v in params:
-        shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
-    return rows, shown
+    return rows, render_sql(sql, params)
