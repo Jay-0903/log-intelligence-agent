@@ -279,6 +279,9 @@ Presentation: **[`docs/slides.pdf`](docs/slides.pdf)** (the deck). Demo script:
   manager view deliberately avoids inventing these.
 - Full-text relevance is BM25 over message text; a high score means textual match,
   not confirmed causation.
+- **Dates/day buckets are UTC** (from `ts`); clock times quoted from log lines are
+  the system's **local time (UTC-8)**. E.g. `ts 1136287505` is 11:25:05 UTC but the
+  log line shows 03:25:05.
 - OpenStack timestamps are parsed to UTC epoch on a best-effort basis; latency is
   taken from the inline `time:` field where present.
 

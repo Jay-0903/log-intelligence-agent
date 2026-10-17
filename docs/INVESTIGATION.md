@@ -523,5 +523,10 @@ next steps.
 - **OpenStack labelled anomalies** (`anomaly_labels.txt`) are not inline in the
   raw logs, so OpenStack "error" figures are ERROR/CRITICAL-level or
   error-keyword matches, not the dataset's ground-truth anomalies.
+- **Time zones.** Dates and day buckets are **UTC** (derived from `ts` via
+  `to_timestamp(ts)`); clock times quoted from log lines come from `event_time`,
+  which is the system's **local time (UTC-8)**. Example: `ts 1136287505` is
+  11:25:05 UTC but `event_time` shows 03:25:05. The last UTC day of data is
+  2006-01-04 (KERNSOCK's `last_seen`).
 - All counts are matching log lines, not de-duplicated incidents; the logs do
   not establish financial loss, downtime or customer impact.
