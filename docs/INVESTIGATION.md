@@ -291,11 +291,8 @@ ORDER BY score DESC LIMIT 5;
 Result (count: 1 — the single `rts panic` in that 24-hour window):
 ```
 id        alert     ts          node                 datetime                    severity  message                          score
-4746673   KERNRTSP  1136287505  R27-M0-NA-C:J11-U11  2006-01-03-03.25.05.504039  FATAL     rts panic! - stopping execution  <fill from re-run>
+4746673   KERNRTSP  1136287505  R27-M0-NA-C:J11-U11  2006-01-03-03.25.05.504039  FATAL     rts panic! - stopping execution  8.382
 ```
-> Re-run note: paste the real BM25 `score` from `engineer_evidence.py` after the
-> ClientCursor fix (the row id/node/time/message are unchanged — id 4746673 is the
-> only `rts panic` in the 2006-01-03 window; only the score column is new).
 
 ### Tool call 2 — `top_nodes_for_alert(category="KERNRTSP", limit=5)`
 Scope: `BGL (4,747,963 lines) | whole corpus`. (count: 5, truncated — more exist)
