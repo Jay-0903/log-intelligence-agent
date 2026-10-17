@@ -91,23 +91,56 @@ def fts_available(index_name):
         return False
 
 
-def search(index_name, text_col, phrase, select_cols, limit=20):
-    """Run a BM25 full-text phrase search against an inverted index.
+import re as _re
 
-    Returns (rows, sql). `select_cols` is a list of columns to return
-    (they must exist on the indexed table/index). Results are ranked by BM25
-    score descending; a `score` column is added.
+
+_MAX_TERMS = 12
+
+
+def _terms(phrase):
+    """Split a free-text query into individual search terms (words).
+
+    Capped at _MAX_TERMS to keep the generated OR query bounded.
+    """
+    words = [w for w in _re.findall(r"[A-Za-z0-9_.\-]+", phrase) if len(w) > 1]
+    return words[:_MAX_TERMS]
+
+
+def search(index_name, text_col, phrase, select_cols, limit=20, mode="any"):
+    """Run a BM25 full-text search against an inverted index.
+
+    `mode`:
+      "any"    -> match ANY of the words (OR of per-term ts_phrase); this is
+                  normal keyword search and what the engineer wants. BM25 still
+                  ranks rows that match more / rarer terms higher.
+      "phrase" -> match the exact phrase (single ts_phrase, strict adjacency).
+
+    Returns (rows, sql). A `score` column (BM25) is added and rows are ranked
+    by it descending.
+
+    Why not always ts_phrase on the whole string? ts_phrase requires the words
+    to appear adjacently in order, so "kernel instruction cache parity error"
+    matches nothing when the log says "instruction cache parity error ...".
+    Per-term OR matching finds the relevant lines and BM25 ranks them.
     """
     cols = ", ".join(select_cols)
-    sql = (
-        f"SELECT {cols}, "
-        f"ROUND(BM25({index_name}.tableoid)::NUMERIC, 3) AS score "
-        f"FROM {index_name} "
-        f"WHERE {text_col} @@ ts_phrase(%s) "
-        f"ORDER BY score DESC "
-        f"LIMIT %s"
-    )
-    rows = query(sql, (phrase, limit))
-    # Echo the bound SQL for provenance (safe: literals are simple).
-    shown = sql.replace("%s", repr(phrase), 1).replace("%s", str(limit), 1)
+    bm25 = f"ROUND(BM25({index_name}.tableoid)::NUMERIC, 3) AS score"
+
+    if mode == "phrase":
+        where = f"{text_col} @@ ts_phrase(%s)"
+        params = [phrase, limit]
+        shown_vals = [phrase, limit]
+    else:
+        terms = _terms(phrase) or [phrase]
+        where = " OR ".join(f"{text_col} @@ ts_phrase(%s)" for _ in terms)
+        params = terms + [limit]
+        shown_vals = terms + [limit]
+
+    sql = (f"SELECT {cols}, {bm25} FROM {index_name} "
+           f"WHERE {where} ORDER BY score DESC LIMIT %s")
+    rows = query(sql, params)
+
+    shown = sql
+    for v in shown_vals:
+        shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
     return rows, shown

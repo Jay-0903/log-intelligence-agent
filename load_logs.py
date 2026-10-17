@@ -92,9 +92,13 @@ def load_bgl(cur, log_file):
 # ===========================================================================
 #  OpenStack
 # ===========================================================================
-# <date> <time> <pid> <LEVEL> <logger> [<brackets>] <message>
+# loghub OpenStack line (the sample has a leading logfile token):
+#   nova-compute.log.1.2017-05-16_13:55:31 2017-05-16 00:00:00.008 25746 INFO
+#   nova.virt.libvirt.imagecache [req-...] <message>
+# The leading "<svc>.log...." token is optional (raw per-service files omit it).
 OS_LINE = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})\s+"
+    r"^(?:(?P<logfile>\S+\.log\S*)\s+)?"      # optional "nova-xxx.log.N...."
+    r"(?P<date>\d{4}-\d{2}-\d{2})\s+"
     r"(?P<time>\d{2}:\d{2}:\d{2}\.\d+)\s+"
     r"(?P<pid>\d+)\s+"
     r"(?P<level>[A-Z]+)\s+"
@@ -125,6 +129,11 @@ def parse_openstack_line(service, raw):
         return None
     g = m.groupdict()
     rest = g["rest"]
+    # Prefer the service named inline in the 2k combined sample.
+    if g.get("logfile"):
+        lm = re.search(r"(nova-[a-z]+)", g["logfile"].lower())
+        if lm:
+            service = lm.group(1)
     req = tenant = None
     rm = OS_REQ.search(rest)
     if rm:

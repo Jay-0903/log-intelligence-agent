@@ -18,7 +18,9 @@ plus pre-computed summaries — so millions of log lines never have to fit in a 
 - **Parameterized tools, not open-ended SQL.** The agent chooses from a fixed set
   of described tools and passes parameters. SereneDB runs the query.
 - **Full-text search uses SereneDB's BM25 inverted index** (`@@` + `ts_phrase`),
-  not substring matching.
+  not substring matching. Multi-word queries match **any** term (OR of per-term
+  `ts_phrase`) and are ranked by BM25, so an extra word never zeroes out a hit;
+  an exact-phrase mode is also available.
 - **Every number is checkable.** Each tool returns the SQL that ran, the filters,
   the data scope, the row count and a `truncated` flag.
 - **Facts vs. hypotheses are separated**, and the manager view uses *measured
