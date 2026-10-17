@@ -298,7 +298,7 @@ def count_bgl_alerts_by_team(limit=20, start=None, end=None):
 
 
 def count_bgl_alert_categories(limit=20, start=None, end=None):
-    """TOOL (team lead): BGL alert-category counts (the 12 labelled categories;
+    """TOOL (team lead): BGL alert-category counts (the 41 labelled categories;
     '-' = normal excluded). Default scope is the WHOLE corpus; pass start/end
     to count over a stated period."""
     limit = _clamp_limit(limit)
@@ -519,7 +519,7 @@ def openstack_request_trace(request_id, limit=50):
                      fts.render_sql(sql, params), rows, limit)
 
 
-def bgl_alert_profile(limit=8, start=None, end=None):
+def bgl_alert_profile(limit=50, start=None, end=None):
     """TOOL (team lead/manager): per BGL alert category, a profile showing
     SPREAD, not just raw line counts:
       lines, distinct_nodes, distinct_days, first_seen, last_seen,
@@ -530,9 +530,9 @@ def bgl_alert_profile(limit=8, start=None, end=None):
     treated as a single incident, even if it also has a few scattered days.
 
     Default scope is the whole corpus; pass start/end to profile over a stated
-    period. `limit` is clamped (BGL has 12 alert categories; pass limit>=12 to
+    period. `limit` is clamped (BGL has 41 alert categories; pass limit>=41 to
     get them all for spread-ranking)."""
-    limit = _clamp_limit(limit, default=12)
+    limit = _clamp_limit(limit, default=50)
     tw, tp, period = _time_clause("ts", start, end)
     # per_day: lines per (category, day); then roll up to per-category with the
     # single busiest day's line count as peak_day_lines.
@@ -544,6 +544,19 @@ def bgl_alert_profile(limit=8, start=None, end=None):
             FROM {TABLE}
             WHERE alert <> '-' AND ts > 0{tw}
             GROUP BY alert, day
+        ),
+        peak AS (
+            -- Busiest day per category; DETERMINISTIC tie-break: on equal
+            -- day_lines, the EARLIEST day wins (day ASC), so peak_day is stable
+            -- across runs (arg_max was non-deterministic on ties).
+            SELECT alert, day AS peak_day, day_lines AS peak_day_lines
+            FROM (
+                SELECT alert, day, day_lines,
+                       ROW_NUMBER() OVER (PARTITION BY alert
+                                          ORDER BY day_lines DESC, day ASC) AS rn
+                FROM per_day
+            ) r
+            WHERE rn = 1
         ),
         prof AS (
             SELECT alert AS category,
@@ -558,20 +571,15 @@ def bgl_alert_profile(limit=8, start=None, end=None):
         )
         SELECT p.category, p.lines, p.distinct_nodes, p.distinct_days,
                p.first_seen, p.last_seen,
-               MAX(d.day_lines) AS peak_day_lines,
-               arg_max(d.day, d.day_lines) AS peak_day,
-               ROUND((MAX(d.day_lines)::NUMERIC / p.lines), 4) AS peak_day_share
+               k.peak_day_lines,
+               k.peak_day,
+               ROUND((k.peak_day_lines::NUMERIC / p.lines), 4) AS peak_day_share
         FROM prof p
-        JOIN per_day d ON d.alert = p.category
-        GROUP BY p.category, p.lines, p.distinct_nodes, p.distinct_days,
-                 p.first_seen, p.last_seen
+        JOIN peak k ON k.alert = p.category
         ORDER BY p.lines DESC
         LIMIT {limit}
     """
-    # Note: arg_max(day, day_lines) returns the busiest day for each category.
-    # If a SereneDB build lacks arg_max, replace with a window-function variant
-    # (ROW_NUMBER() OVER (PARTITION BY alert ORDER BY day_lines DESC)).
-    # time params appear twice (per_day CTE + prof CTE)
+    # time params appear twice: per_day CTE (used by peak) + prof CTE
     rows = query(sql, (tp + tp) or None)
     return _envelope("bgl_alert_profile",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",

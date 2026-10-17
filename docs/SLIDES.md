@@ -57,7 +57,8 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 
 ## Slide 5 — Engineer (live, same thread: investigate the alert the team lead flagged)
 
-- Team lead/manager prioritised **KERNRTSP** (126 days) → engineer investigates it.
+- Team lead/manager flag the persistent kernel alerts (**KERNMC 144 days**,
+  **KERNRTSP 126 days**) → engineer investigates the KERNMC→KERNRTSP panic.
 - Claude chose `search_logs_fulltext("rts panic")` → `top_nodes_for_alert` →
   `get_nearby_events` (node-scoped).
 - Two phases: Jun–Sep 2005 partition-wide bursts (2,048 panics on 06-14 alone =
@@ -78,7 +79,7 @@ Diagram: `question → [agent picks tool] → SereneDB query → evidence → an
 - Team Lead: whole-corpus counts show KERNDTLB leads (152,734), but
   **`trend_by_day` reveals 99.6% fell on one day (2005-06-12)** — the real
   insight. Route to Kernel Platform, but as a one-day incident, not a defect.
-  The *actually* recurring alerts are **KERNRTSP (126 days)** and **APPSEV (70
+  The *actually* persistent alerts are **KERNMC (144 days)** and **KERNRTSP (126
   days)** — Claude reasoned this from `alert_profile` + `trend_by_day`.
 - Manager: ranked by **persistence** (days present), each routed to its correct
   owner (KERN* → Kernel Platform, APP* → Application Runtime). **No invented**

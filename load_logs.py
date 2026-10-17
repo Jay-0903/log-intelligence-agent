@@ -92,13 +92,15 @@ def load_bgl(cur, log_file):
 
 
 def clean_bgl_file(src):
-    """Write a UTF-8-clean copy of a BGL log next to it (<name>_clean.log).
+    """OPTIONAL hygiene: write a UTF-8-clean copy of a BGL log (<name>_clean.log).
 
-    The full BGL.log has a few invalid UTF-8 bytes that break SereneDB's
-    inverted-index build. We stream line by line, decode bytes with
-    errors='replace' (invalid bytes -> U+FFFD), and re-encode as valid UTF-8.
-    Run this ONCE, then load the cleaned file with --server-bgl. Returns the
-    cleaned path. Streaming keeps memory flat on the 709 MB file.
+    The full BGL.log has a few stray non-UTF-8 bytes. Loading/searching the raw
+    file already works (the "Invalid unicode" that once forced a LIKE fallback
+    was a server-side param-binding issue, fixed by ClientCursor in db.py), so
+    this step is NOT required — it is just belt-and-suspenders hygiene. We stream
+    line by line, decode with errors='replace' (bad bytes -> U+FFFD), and
+    re-encode as valid UTF-8. Returns the cleaned path; streaming keeps memory
+    flat on the 709 MB file.
     """
     base, ext = os.path.splitext(src)
     dst = f"{base}_clean{ext or '.log'}"
@@ -129,20 +131,17 @@ def load_bgl_bulk(mount_path):
       2. parse the 9 fixed fields + message tail in SQL with regexp_extract.
     Only the parsed table and its index live locally.
 
-    IMPORTANT — invalid UTF-8 in the FULL BGL.log: the full file contains a few
-    invalid UTF-8 bytes (the 2k sample does not). If you load it raw, the
-    inverted-index build fails with "Invalid unicode (byte sequence mismatch)"
-    and search silently falls back to LIKE. Do NOT fix this with
-    `encoding := 'latin-1'` on read_csv — that makes the server-side read
-    pathologically slow (per-byte decode path: 18+ min / stuck vs. 41 s). Instead
-    pre-clean the file ONCE to valid UTF-8 and point --server-bgl at the cleaned
-    copy:
+    This loads the full BGL.log directly (default utf-8 read_csv) and builds the
+    full-text index. Full-text search on the full corpus works because the client
+    uses client-side parameter binding (`cursor_factory=psycopg.ClientCursor` in
+    db.py) — the earlier "Invalid unicode (byte sequence mismatch)" that forced a
+    LIKE fallback was a server-side param-binding issue, NOT bad input bytes, and
+    is fixed there.
 
-        python load_logs.py --clean-bgl path/to/BGL.log      # writes BGL_clean.log
-        # then mount ./data and:
-        python load_logs.py --server-bgl /data/BGL_clean.log --openstack ...
-
-    read_csv then runs at full speed (default utf-8) and the index builds clean.
+    `--clean-bgl` is OPTIONAL hygiene only (it rewrites a UTF-8-clean copy); it is
+    NOT required for the index or search to work. Do not use
+    `encoding := 'latin-1'` on read_csv — it makes the server-side read
+    pathologically slow (18+ min / stuck vs. ~41 s).
     """
     execute(f"DROP TABLE IF EXISTS {TABLE}")
     execute(f"""
@@ -299,7 +298,13 @@ def discover_openstack(path):
         files = []
         for pat in ("*.log", "*.log.*", "nova-*", "OpenStack*.log"):
             files += glob.glob(os.path.join(path, "**", pat), recursive=True)
-        return sorted(set(f for f in files if os.path.isfile(f)))
+        # Skip BGL*.log so pointing --openstack at ./data (which may also hold
+        # BGL.log) never ingests BGL into the OpenStack table. Point --openstack
+        # at the data/openstack subfolder for a clean load.
+        return sorted(set(
+            f for f in files
+            if os.path.isfile(f)
+            and not os.path.basename(f).lower().startswith("bgl")))
     return []
 
 
@@ -407,14 +412,15 @@ def main():
                     help="Also load every loghub sample system into `logs` (optional)")
     ap.add_argument("--server-bgl",
                     help="Server-side path to BGL.log for the fast bulk load via "
-                         "read_csv, e.g. /data/BGL_clean.log (needs the folder "
-                         'mounted: -v "$PWD/data":/data). Fastest for the full '
-                         "4.7M-line corpus. Use the _clean.log from --clean-bgl.")
+                         "read_csv, e.g. /data/BGL.log (needs the folder mounted: "
+                         '-v "$PWD/data":/data). Fastest for the full 4.7M-line '
+                         "corpus. Loads the raw file directly; full-text works via "
+                         "the ClientCursor fix in db.py.")
     ap.add_argument("--clean-bgl", metavar="PATH",
-                    help="One-time: write a UTF-8-clean <name>_clean.log next to "
-                         "PATH (the full BGL.log has invalid UTF-8 bytes that "
-                         "break the index build). Then load the cleaned file with "
-                         "--server-bgl. Does nothing else.")
+                    help="OPTIONAL hygiene: write a UTF-8-clean <name>_clean.log "
+                         "next to PATH. NOT required for the index or search to "
+                         "work (that was a server-side param-binding issue, fixed "
+                         "in db.py via ClientCursor). Does nothing else.")
     ap.add_argument("--otel-files", type=int, metavar="N",
                     help="OPTIONAL huge-datasets award: create a view over the "
                          "first N remote OpenTelemetry Parquet files (1-50; one "

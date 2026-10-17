@@ -173,7 +173,7 @@ def answer_team_lead(question):
     """Which problems recur, how often, and which teams own them."""
     out = ["TEAM LEAD — recurring patterns & ownership", ""]
 
-    # Fetch ALL ~12 categories so the "most recurring" (by days) is visible even
+    # Fetch all 41 categories so the "most recurring" (by days) is visible even
     # if it is low by volume (e.g. KERNRTSP: 126 days but only ~4k lines).
     prof = tools.bgl_alert_profile(limit=50)
     by_days = sorted(prof["rows"], key=_recurring_key, reverse=True)
@@ -238,7 +238,7 @@ def answer_manager(question):
     """What deserves attention first and why — measured frequency only."""
     out = ["MANAGER — prioritized risks (measured frequency only)", ""]
 
-    # Fetch ALL ~12 BGL alert categories so spread-ranking can surface a chronic
+    # Fetch all 41 BGL alert categories so spread-ranking can surface a chronic
     # alert (e.g. KERNRTSP) that is low by volume but present on many days.
     prof = tools.bgl_alert_profile(limit=50)
     all_rows = prof["rows"]

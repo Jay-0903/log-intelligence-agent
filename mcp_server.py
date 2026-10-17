@@ -131,7 +131,7 @@ def alert_categories(limit: int = 20, start: str = "", end: str = "") -> str:
 
 
 @mcp.tool()
-def alert_profile(limit: int = 12, start: str = "", end: str = "") -> str:
+def alert_profile(limit: int = 50, start: str = "", end: str = "") -> str:
     """TEAM LEAD / MANAGER spread view. Per BGL alert category: lines,
     distinct_nodes, distinct_days, first_seen, last_seen, peak_day,
     peak_day_lines, and **peak_day_share** (max lines on one day / total).
@@ -142,9 +142,8 @@ def alert_profile(limit: int = 12, start: str = "", end: str = "") -> str:
     KERNDTLB = 99.6% on 2005-06-12) — so treat it as a one-off incident, not a
     recurring problem, even if it also has a few scattered days.
 
-    Default `limit` is 12 (BGL has 12 alert categories) so you see EVERY category
-    and can rank by spread, not just the loudest few. Pass start/end for a
-    period."""
+    BGL has 41 alert categories; default limit 50 returns all of them, so you can
+    rank by spread, not just the loudest few. Pass start/end for a period."""
     return _json(tools.bgl_alert_profile(limit, start or None, end or None))
 
 
@@ -192,17 +191,20 @@ def trend_by_week(category: str = "", limit: int = 60,
 @mcp.tool()
 def openstack_by_component(start: str = "", end: str = "") -> str:
     """TEAM LEAD / MANAGER aggregation. OpenStack counts per nova service
-    (nova-api/compute/scheduler): total lines, problem lines, problem %, average
-    latency, and the owning team. Default scope is the WHOLE corpus; pass
-    start/end to count over a stated period. The core OpenStack error-rate view."""
+    (nova-api/compute/scheduler): total lines, average latency, the owning team,
+    and `error_lines`/`error_pct` = lines whose LEVEL is ERROR/CRITICAL or whose
+    text matches error keywords — NOT the dataset's labelled anomalies
+    (anomaly_labels.txt is not inline in the raw logs). Report it as an
+    error-keyword rate. Default scope is the WHOLE corpus; pass start/end for a
+    period."""
     return _json(tools.count_openstack_by_component(start or None, end or None))
 
 
 @mcp.tool()
 def latency_stats() -> str:
     """MANAGER / TEAM LEAD latency distribution. Per nova service over the whole
-    OpenStack corpus: request count, avg/min/max latency (ms). Use measured
-    latency only; do not invent downtime or customer impact."""
+    OpenStack corpus: count, avg, min, p50, p95, p99, max latency (ms). Use
+    measured latency only; do not invent downtime or customer impact."""
     return _json(tools.openstack_latency_stats())
 
 
