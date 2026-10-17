@@ -245,8 +245,9 @@ day's incident," which is the kind of insight the aggregation tools exist to
 surface. Each role uses the same corpus differently (see the table at the end of
 that doc).
 
-Demo script: [`docs/DEMO.md`](docs/DEMO.md). Slides outline:
-[`docs/SLIDES.md`](docs/SLIDES.md).
+Presentation: **[`docs/slides.pdf`](docs/slides.pdf)** (the deck). Demo script:
+[`docs/DEMO.md`](docs/DEMO.md). Slide outline / speaker notes:
+[`docs/SLIDES.md`](docs/SLIDES.md), [`docs/SLIDE_NOTES.md`](docs/SLIDE_NOTES.md).
 
 ---
 
