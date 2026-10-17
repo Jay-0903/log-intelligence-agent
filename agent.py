@@ -12,6 +12,11 @@ Each answer:
   * separates OBSERVED FACTS from HYPOTHESES,
   * ends with a role-appropriate NEXT STEP.
 
+Reporting rule (brief requirement): root causes are HYPOTHESES unless the logs
+confirm them — phrase cause statements as "likely" / "consistent with", and say
+what the logs do not establish. Counts are matching log lines, not confirmed
+incidents; never invent downtime, cost or customer impact.
+
 Roles differ in which evidence they select, not just answer length:
   Engineer  -> full-text search + nearby events (what/where, drill in)
   Team lead -> recurring categories + per-team counts + trend (what recurs)
@@ -106,9 +111,10 @@ def answer_engineer(question):
                                  ["log_time", "level", "component", "message"],
                                  [23, 6, 13, 50])
                 out.append(_provenance(trace))
-            out += ["", "HYPOTHESIS — the highest-scoring lines point at the "
-                    "component above; the request trace shows where in the "
-                    "request's lifecycle it occurred.",
+            out += ["", "HYPOTHESIS — the highest-scoring lines are likely "
+                    "centred on the component above; the request trace shows "
+                    "where in the request's lifecycle it occurred. This is "
+                    "consistent with the evidence, not a confirmed cause.",
                     "NEXT STEP — if the trace shows an error mid-request, check "
                     "that component's handler for that request path."]
             return "\n".join(out)
@@ -137,9 +143,10 @@ def answer_engineer(question):
     top = rows[0] if rows else None
     comp = top.get("component") if top else "?"
     out += ["",
-            f"HYPOTHESIS — failure centres on component '{comp}' on the node above; "
-            "the nearby window shows what co-occurred. The logs show the symptom, "
-            "not a confirmed root cause.",
+            f"HYPOTHESIS — the symptom is likely centred on component '{comp}' on "
+            "the node above; the nearby window shows what co-occurred. This is "
+            "consistent with the evidence but NOT a confirmed root cause — "
+            "co-occurrence is not causation.",
             f"NEXT STEP — check the owning team's runbook for '{comp}' and widen the "
             "window (get_nearby_events, larger window_seconds) to see if the alert "
             "repeats on the same node."]

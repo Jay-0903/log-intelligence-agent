@@ -16,6 +16,12 @@ Every tool returns a JSON envelope with the SQL that ran, the filters, the
 data scope, the row count and a `truncated` flag, so every number is
 checkable.
 
+REPORTING RULE (applies to every answer):
+  Separate observed facts from explanations. Root causes are HYPOTHESES unless
+  the logs explicitly confirm them — phrase cause statements as "likely" /
+  "consistent with" / "appears to", and state what the logs do not establish.
+  Counts are matching log lines, not confirmed incidents.
+
 Run (stdio transport, the default for Claude Desktop / Claude Code):
     python mcp_server.py
 """
@@ -25,7 +31,24 @@ from mcp.server.fastmcp import FastMCP
 
 import tools
 
-mcp = FastMCP("log-intelligence")
+INSTRUCTIONS = (
+    "Tools to search and aggregate BGL/OpenStack logs in SereneDB for three "
+    "roles (engineer, team lead, manager). Pick a tool per the role and "
+    "question; every result includes the SQL, filters and data scope so numbers "
+    "are checkable.\n\n"
+    "REPORTING RULE: clearly separate observed facts from explanations. A root "
+    "cause is a HYPOTHESIS unless the logs confirm it — phrase cause statements "
+    "as 'likely', 'consistent with', or 'appears to', and say what the logs do "
+    "NOT establish. Counts are matching log lines, not confirmed incidents; do "
+    "not invent downtime, cost or customer impact."
+)
+
+try:
+    mcp = FastMCP("log-intelligence", instructions=INSTRUCTIONS)
+except TypeError:
+    # Older FastMCP without an `instructions` kwarg — the per-tool descriptions
+    # still carry the reporting rule.
+    mcp = FastMCP("log-intelligence")
 
 
 def _json(env):
@@ -61,7 +84,11 @@ def search_logs_fulltext(dataset: str, phrase: str, limit: int = 15,
       start/end: optional time filter — unix seconds or 'YYYY-MM-DD'[ HH:MM:SS].
                  Restrict the search to events in that window.
     Returns: ranked log lines with a BM25 `score`, plus the SQL, filters and
-    period used. Use this to find WHAT failed before pulling nearby context."""
+    period used. Use this to find WHAT failed before pulling nearby context.
+
+    Reporting: these lines are observed facts. Any root cause you infer is a
+    HYPOTHESIS unless the logs confirm it — phrase it as 'likely' / 'consistent
+    with', and state what the logs do not establish."""
     s = start or None
     e = end or None
     if dataset.lower().startswith("open"):
@@ -76,7 +103,11 @@ def get_nearby_events(ts: int, window_seconds: int = 120, limit: int = 20,
     search hit), return log lines within +/- window_seconds, in time order. Pass
     `node` to restrict to one node so a wide window on a large cluster doesn't
     mix in unrelated nodes. Use this to see what happened JUST BEFORE and AFTER a
-    failure."""
+    failure.
+
+    Reporting: co-occurrence is not causation. Describe the sequence as observed
+    fact; label any cause as a HYPOTHESIS ('likely' / 'consistent with') and note
+    what the logs cannot confirm."""
     return _json(tools.get_nearby_events_bgl(ts, window_seconds, limit,
                                              node or None))
 
