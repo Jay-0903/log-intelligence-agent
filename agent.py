@@ -49,6 +49,19 @@ def _provenance(env):
             f"  [query: {env['query']}]")
 
 
+def _recurring_key(r):
+    """Sort key for 'most recurring' / spread ranking. Higher = more recurring:
+    more distinct days, then still-active-at-end-of-data (later last_seen),
+    then more nodes, then more lines. Bursts (peak_day_share >= 0.9) are
+    de-prioritised so a one-day storm never ranks as 'recurring'."""
+    days = r.get("distinct_days") or 0
+    last = str(r.get("last_seen") or "")      # ISO date string sorts correctly
+    nodes = r.get("distinct_nodes") or 0
+    lines = r.get("lines") or 0
+    not_burst = 0 if tools._is_burst(r) else 1
+    return (not_burst, days, last, nodes, lines)
+
+
 def _dedupe_by_message(rows):
     """Collapse rows with identical `message` into one, keeping the first
     occurrence and adding an `n` count. Reinforces the brief's point that
@@ -163,10 +176,7 @@ def answer_team_lead(question):
     # Fetch ALL ~12 categories so the "most recurring" (by days) is visible even
     # if it is low by volume (e.g. KERNRTSP: 126 days but only ~4k lines).
     prof = tools.bgl_alert_profile(limit=50)
-    def _days_key(r):
-        return (r.get("distinct_days") or 0, r.get("distinct_nodes") or 0,
-                r.get("lines") or 0)
-    by_days = sorted(prof["rows"], key=_days_key, reverse=True)
+    by_days = sorted(prof["rows"], key=_recurring_key, reverse=True)
     out.append("OBSERVED — BGL alert categories, whole corpus — ranked by SPREAD "
                "(distinct days present), because one line is not one incident:")
     out += _fmt_rows(by_days,
@@ -198,12 +208,19 @@ def answer_team_lead(question):
         rec_team = tools.team_for_bgl_alert(recurring["category"])
         nodes = tools.bgl_top_nodes_for_alert(recurring["category"], limit=3)["rows"]
         node_list = ", ".join(n["node"] for n in nodes) or "the affected nodes"
+        share = loudest.get("peak_day_share")
+        if share is not None:
+            loud_desc = (f"{float(share)*100:.1f}% of its lines fall on ONE day "
+                         f"({loudest['last_seen']})" if tools._is_burst(loudest)
+                         else f"spans {loudest['distinct_days']} days")
+        else:
+            loud_desc = f"spans {loudest['distinct_days']} day(s)"
         out += ["",
                 f"HYPOTHESIS — the LOUDEST alert '{loudest['category']}' "
-                f"({loudest['lines']:,} lines) is misleading: it spans only "
-                f"{loudest['distinct_days']} day(s). The alert that actually "
-                f"RECURS is '{recurring['category']}' — {recurring['distinct_days']} "
-                f"days ({recurring['first_seen']}..{recurring['last_seen']}), "
+                f"({loudest['lines']:,} lines) is misleading: {loud_desc}. The "
+                f"alert that actually RECURS is '{recurring['category']}' — "
+                f"{recurring['distinct_days']} days "
+                f"({recurring['first_seen']}..{recurring['last_seen']}), "
                 f"{recurring['distinct_nodes']} nodes — owned by '{rec_team}'.",
                 f"NEXT STEP — stand up a work item for '{recurring['category']}' "
                 f"with {rec_team}; inspect nodes {node_list} first, and use "
@@ -230,18 +247,16 @@ def answer_manager(question):
     out.append(f"DATA SCOPE — BGL: {bgl_n} lines; OpenStack: {os_txt} "
                "(whole corpus).")
 
-    # Rank ALL categories by spread (days present, then nodes), not by volume.
-    def _spread_key(r):
-        return (r.get("distinct_days") or 0, r.get("distinct_nodes") or 0,
-                r.get("lines") or 0)
-    by_spread = sorted(all_rows, key=_spread_key, reverse=True)
+    # Rank ALL categories by spread (days present; still-active first; bursts
+    # de-prioritised), not by volume.
+    by_spread = sorted(all_rows, key=_recurring_key, reverse=True)
 
-    out += ["", "OBSERVED — BGL alerts ranked by SPREAD (days present, then "
-            "nodes) — this is how we prioritise, NOT by raw line count:"]
+    out += ["", "OBSERVED — BGL alerts ranked by SPREAD (days present, "
+            "still-active first; one-day bursts flagged) — NOT by raw count:"]
     out += _fmt_rows(by_spread,
                      ["category", "lines", "distinct_nodes", "distinct_days",
-                      "first_seen", "last_seen"],
-                     [10, 9, 8, 7, 11, 11])
+                      "peak_day_share", "last_seen"],
+                     [10, 9, 8, 7, 10, 11])
     out.append(_provenance(prof))
 
     osc = tools.count_openstack_by_component()
@@ -258,10 +273,11 @@ def answer_manager(question):
 
     out += ["", "PRIORITIZED ACTIONS — sustained problems (many days) first, "
             "then OpenStack, then one-day bursts as retrospectives:"]
-    # Split ALL categories into sustained (>1 day) vs bursts (1 day). Sustained
-    # ranked by days then nodes; bursts listed after as incident reviews.
-    sustained = [r for r in by_spread if (r.get("distinct_days") or 0) > 1]
-    bursts = [r for r in by_spread if (r.get("distinct_days") or 0) == 1]
+    # Split by burst-share: a category concentrated on one day (peak_day_share
+    # >= 0.9) is a BURST even if a few scattered days exist; the rest are
+    # sustained. Sustained already ranked by _recurring_key (still-active first).
+    sustained = [r for r in by_spread if not tools._is_burst(r)]
+    bursts = [r for r in by_spread if tools._is_burst(r)]
     rank = 1
     for row in sustained[:3]:
         cat = row["category"]
@@ -284,9 +300,12 @@ def answer_manager(question):
     for row in bursts[:1]:
         cat = row["category"]
         team = tools.team_for_bgl_alert(cat)
+        share = row.get("peak_day_share")
+        pct = f"{float(share)*100:.1f}% on a single day" if share is not None \
+            else "concentrated on one day"
         out.append(
-            f"  {rank}. BGL '{cat}' — BURST: {row['lines']:,} lines but "
-            f"concentrated on ONE day ({row['first_seen']}). Treat as an "
+            f"  {rank}. BGL '{cat}' — BURST: {row['lines']:,} lines, {pct} "
+            f"(seen {row['first_seen']}..{row['last_seen']}). Treat as an "
             f"incident retrospective, not an ongoing problem. Owner: {team}.")
         rank += 1
     out.append(f"  {rank}. Monitor only: low-rate OpenStack services and small "

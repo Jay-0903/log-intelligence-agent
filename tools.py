@@ -514,37 +514,75 @@ def openstack_request_trace(request_id, limit=50):
 
 
 def bgl_alert_profile(limit=8, start=None, end=None):
-    """TOOL (team lead/manager): per BGL alert category, a one-GROUP-BY profile
-    showing SPREAD, not just raw line counts.
-      lines, distinct_nodes, distinct_days, first_seen, last_seen.
+    """TOOL (team lead/manager): per BGL alert category, a profile showing
+    SPREAD, not just raw line counts:
+      lines, distinct_nodes, distinct_days, first_seen, last_seen,
+      peak_day_lines, peak_day_share (max lines on one day / total).
 
-    This supports the brief's guidance: matching lines are not incidents, so
-    report affected scope ('N lines on D nodes over K days') rather than
-    treating each line as a separate incident. Default scope is the whole
-    corpus; pass start/end to profile over a stated period.
+    `peak_day_share` identifies BURSTS: a category whose share >= 0.9 is
+    concentrated on one day (e.g. KERNDTLB = 99.6% on 2005-06-12) and should be
+    treated as a single incident, even if it also has a few scattered days.
 
-    `limit` is clamped (BGL has 12 alert categories; pass limit>=12 to get them
-    all for spread-ranking)."""
+    Default scope is the whole corpus; pass start/end to profile over a stated
+    period. `limit` is clamped (BGL has 12 alert categories; pass limit>=12 to
+    get them all for spread-ranking)."""
     limit = _clamp_limit(limit, default=12)
     tw, tp, period = _time_clause("ts", start, end)
+    # per_day: lines per (category, day); then roll up to per-category with the
+    # single busiest day's line count as peak_day_lines.
     sql = f"""
-        SELECT alert AS category,
-               COUNT(*) AS lines,
-               COUNT(DISTINCT node) AS distinct_nodes,
-               COUNT(DISTINCT CAST(to_timestamp(ts) AS DATE)) AS distinct_days,
-               CAST(to_timestamp(MIN(ts)) AS DATE) AS first_seen,
-               CAST(to_timestamp(MAX(ts)) AS DATE) AS last_seen
-        FROM {TABLE}
-        WHERE alert <> '-' AND ts > 0{tw}
-        GROUP BY alert
-        ORDER BY lines DESC
+        WITH per_day AS (
+            SELECT alert,
+                   CAST(to_timestamp(ts) AS DATE) AS day,
+                   COUNT(*) AS day_lines
+            FROM {TABLE}
+            WHERE alert <> '-' AND ts > 0{tw}
+            GROUP BY alert, day
+        ),
+        prof AS (
+            SELECT alert AS category,
+                   COUNT(*) AS lines,
+                   COUNT(DISTINCT node) AS distinct_nodes,
+                   COUNT(DISTINCT CAST(to_timestamp(ts) AS DATE)) AS distinct_days,
+                   CAST(to_timestamp(MIN(ts)) AS DATE) AS first_seen,
+                   CAST(to_timestamp(MAX(ts)) AS DATE) AS last_seen
+            FROM {TABLE}
+            WHERE alert <> '-' AND ts > 0{tw}
+            GROUP BY alert
+        )
+        SELECT p.category, p.lines, p.distinct_nodes, p.distinct_days,
+               p.first_seen, p.last_seen,
+               MAX(d.day_lines) AS peak_day_lines,
+               ROUND((MAX(d.day_lines)::NUMERIC / p.lines), 4) AS peak_day_share
+        FROM prof p
+        JOIN per_day d ON d.alert = p.category
+        GROUP BY p.category, p.lines, p.distinct_nodes, p.distinct_days,
+                 p.first_seen, p.last_seen
+        ORDER BY p.lines DESC
         LIMIT {limit}
     """
-    rows = query(sql, tp or None)
+    # time params appear twice (per_day CTE + prof CTE)
+    rows = query(sql, (tp + tp) or None)
     return _envelope("bgl_alert_profile",
                      f"BGL ({_count(TABLE):,} lines) | period: {period}",
                      {"group_by": "alert", "start": start, "end": end},
                      sql, rows, limit)
+
+
+# A category is a BURST when nearly all its lines fall on a single day.
+BURST_SHARE = 0.9
+
+
+def _is_burst(row):
+    """True if the category is concentrated on one day (peak_day_share >= 0.9).
+    Falls back to distinct_days == 1 if peak_day_share is unavailable."""
+    share = row.get("peak_day_share")
+    if share is not None:
+        try:
+            return float(share) >= BURST_SHARE
+        except (TypeError, ValueError):
+            pass
+    return (row.get("distinct_days") or 0) == 1
 
 
 def bgl_top_nodes_for_alert(category, limit=5, start=None, end=None):

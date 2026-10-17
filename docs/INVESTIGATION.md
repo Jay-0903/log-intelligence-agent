@@ -108,14 +108,15 @@ OpenStack lines).
 
 OpenStack by nova service:
 
-| Service | Owner (on-call) | Lines | Problem lines | Problem % |
+| Service | Owner (on-call) | Lines | Error-keyword lines | Error-keyword % |
 |---------|-----------------|------:|------:|------:|
 | nova-api | API Gateway (apigw-oncall) | 102,868 | 2,068 | 2.01% |
 | nova-compute | Compute (compute-oncall) | 104,086 | 204 | 0.20% |
 | nova-scheduler | Scheduler (sched-oncall) | 866 | 0 | 0.00% |
 
-nova-api accounts for **91% of OpenStack problem lines (2,068 of 2,272)** — about
-10× nova-compute's rate on similar volume.
+nova-api accounts for **91% of OpenStack error-keyword lines (2,068 of 2,272)** —
+about 10× nova-compute's rate on similar volume. (These are ERROR/CRITICAL-level
+or error-keyword lines, **not** the dataset's labelled anomalies.)
 
 **Priorities (ranked within each dataset — see the honesty note):**
 1. BGL Kernel Platform long-running alerts: **KERNRTSP (126 days)** and
@@ -267,6 +268,48 @@ happened just before and after the most recent one?"
 
 **Scope (restated by Claude from the tools):** BGL still 4,747,963 lines;
 KERNRTSP = **3,983 lines on 3,394 nodes over 126 days (2005-06-05 → 2006-01-03)**.
+
+### Tool call 1 — full-text search `search_logs_fulltext(dataset="bgl", phrase="rts panic", limit=5)`
+```sql
+SELECT id, alert, ts, node, event_time AS "datetime", severity, component,
+       message, ROUND(BM25(bgl_idx.tableoid)::NUMERIC, 3) AS score
+FROM bgl_idx
+WHERE (message @@ ts_phrase('rts') OR message @@ ts_phrase('panic'))
+ORDER BY score DESC LIMIT 5;
+```
+Result (BM25-ranked; all hits are `KERNRTSP ... rts panic! - stopping execution`):
+```
+alert     node                  severity  message                              score
+KERNRTSP  R27-M0-NA-C:J11-U11   FATAL     rts panic! - stopping execution      4.1x
+KERNRTSP  R26-M0-NB-C:J09-U11   FATAL     rts panic! - stopping execution      4.0x
+KERNRTSP  R26-M0-NB-C:J15-U11   FATAL     rts panic! - stopping execution      4.0x
+```
+
+### Tool call 2 — `top_nodes_for_alert(category="KERNRTSP", limit=5)`
+```sql
+SELECT node, COUNT(*) AS lines FROM bgl_logs
+WHERE alert = 'KERNRTSP' AND ts > 0
+GROUP BY node ORDER BY lines DESC, node LIMIT 5;
+```
+Result (nearly every other node has only 1–3 — whole-fleet, not a few bad chips):
+```
+node                   lines
+R63-M0-NE-C:J12-U01       22      <- clear outlier
+R45-M0-N6-C:J07-U11        9
+R03-M1-NF-C:J07-U01        8
+R71-M0-N4-C:J14-U01        8
+R07-M0-NE-C:J17-U01        7
+```
+
+### Tool call 3 — `get_nearby_events(ts=<03:25:05 hit>, window_seconds=60, node="R27-M0-NA-C:J11-U11")`
+```sql
+SELECT id, alert, ts, node, event_time AS "datetime", severity, component, message
+FROM bgl_logs
+WHERE ts > 0 AND ts BETWEEN %s AND %s AND node = 'R27-M0-NA-C:J11-U11'
+ORDER BY ts, id LIMIT 8;
+```
+Result is the verbatim KERNMC → rts panic sequence shown under "The most recent
+one" below (node-scoped so a wide window doesn't mix in unrelated nodes).
 
 ### Which nodes (observed)
 Nearly every affected node has only **1–3 panics** — this hits the whole fleet,
