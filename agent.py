@@ -44,6 +44,23 @@ def _provenance(env):
             f"  [query: {env['query']}]")
 
 
+def _dedupe_by_message(rows):
+    """Collapse rows with identical `message` into one, keeping the first
+    occurrence and adding an `n` count. Reinforces the brief's point that
+    matching lines are not automatically separate incidents (common on the 2k
+    sample where lines repeat)."""
+    seen = {}
+    order = []
+    for r in rows:
+        key = r.get("message")
+        if key not in seen:
+            seen[key] = dict(r, n=1)
+            order.append(key)
+        else:
+            seen[key]["n"] += 1
+    return [seen[k] for k in order]
+
+
 def _unavailable(env):
     """True if a tool result refers to a table that is not loaded."""
     return env.get("query") is None and env.get("note")
@@ -85,9 +102,11 @@ def answer_engineer(question):
     # BGL: full-text search, then nearby events around the top hit.
     env = tools.search_bgl_fulltext(phrase, limit=8)
     rows = env["rows"]
-    out.append(f"OBSERVED — top BGL matches for '{phrase}' (BM25 ranked):")
-    out += _fmt_rows(rows, ["severity", "node", "component", "message"],
-                     [7, 20, 10, 70])
+    distinct = _dedupe_by_message(rows)
+    out.append(f"OBSERVED — top BGL matches for '{phrase}' (BM25 ranked, "
+               f"identical messages collapsed with an occurrence count 'n'):")
+    out += _fmt_rows(distinct, ["n", "severity", "node", "component", "message"],
+                     [3, 7, 20, 10, 66])
     out.append(_provenance(env))
 
     if rows and rows[0].get("ts"):
