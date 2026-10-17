@@ -104,26 +104,56 @@ is KERNRTSP (126 days, still active), APPSEV (70 days), KERNMNTF (26 days, still
 active). Kernel Platform carries ~82% of all BGL alert lines (284,344 of
 348,460); Application Runtime ~18%.
 
-**Honest gap it reported:** `corpus_scope` shows 207,820 OpenStack lines, but
-`openstack_by_component` reported the table unavailable (see the known bug below),
-so **no OpenStack frequencies were given** — Claude explicitly said it could not
-compare the two datasets on measured data, and listed "fix the OpenStack load" as
-the first next step rather than inventing numbers.
+**Full cross-dataset result (after the one-time OpenStack reload — see note):**
+every figure a measured count over the whole corpus (4,747,963 BGL + 207,820
+OpenStack lines).
 
-**Next steps (as given):** fix the OpenStack load so both datasets compare on
-measured data; kernel-oncall → KERNRTSP + KERNMNTF; apprt-oncall → APPSEV; run a
-short retrospective on the 2005-06-12 KERNDTLB burst.
+OpenStack by nova service:
+
+| Service | Owner (on-call) | Lines | Problem lines | Problem % |
+|---------|-----------------|------:|------:|------:|
+| nova-api | API Gateway (apigw-oncall) | 102,868 | 2,068 | 2.01% |
+| nova-compute | Compute (compute-oncall) | 104,086 | 204 | 0.20% |
+| nova-scheduler | Scheduler (sched-oncall) | 866 | 0 | 0.00% |
+
+nova-api accounts for **91% of OpenStack problem lines (2,068 of 2,272)** — about
+10× nova-compute's rate on similar volume.
+
+**Priorities (ranked within each dataset — see the honesty note):**
+1. BGL Kernel Platform long-running alerts: **KERNRTSP (126 days)** and
+   **KERNMNTF (26 days)**, both still occurring at the end of the data; Kernel
+   Platform owns ~82% of BGL alert lines (284,344 of 348,460).
+2. BGL Application Runtime: **APPSEV** — 49,651 lines on 70 days, all 1,024 nodes.
+3. OpenStack API Gateway: **nova-api errors** — 2,068 lines, 2.01%; the clear
+   OpenStack priority (though far smaller absolute count than the BGL categories).
+4. **Look back at the bursts but don't treat them as active:** KERNDTLB 99.6% on
+   one day (2005-06-12); KERNSTOR on only 4 days.
+5. Monitor only: nova-compute (0.20%), nova-scheduler (0), and the small BGL
+   Interconnect / Control System / Observability components (271 alert lines).
+
+**Cross-dataset honesty (Claude's own framing):** "The two datasets measure
+different things — labelled alert lines in BGL, error-matched lines in OpenStack
+— so I'm ranking within each dataset and treating raw counts as a rough guide to
+scale, not a direct comparison." Exactly the distinction the `error_match`
+naming was built to support.
+
+**Next steps (as given):** kernel-oncall → KERNRTSP + KERNMNTF; apprt-oncall →
+APPSEV; apigw-oncall → break down the 2,068 nova-api problem lines by error type;
+Kernel Platform → short retrospective on the 2005-06-12 KERNDTLB burst; re-run
+the view per period to confirm the patterns hold (BGL via `trend_by_day`,
+OpenStack via the start/end dates).
 
 **What the data does NOT establish:** counts are matching log lines, not
 confirmed incidents; no financial loss / downtime / customer impact; OpenStack
-"error" would be a keyword/level match, not a labelled anomaly.
+"problem" means ERROR/CRITICAL level or error keywords (`error_match`), not the
+dataset's labelled anomalies.
 
-> **Known bug surfaced by this session (now fixed in code):** the OpenStack tools
-> queried `error_match` (renamed from `is_problem`) while the loaded table still
-> used the old schema, so the SELECT failed and was mis-reported as "table not
-> loaded." The tools now surface the real SQL error and hint to reload. **Fix:
-> reload OpenStack once** — `python load_logs.py --openstack ./data/OpenStack` —
-> and the manager answer gains the nova-service error-keyword rates and latency.
+> **Note (resolved):** an earlier run showed OpenStack as "unavailable" — the
+> tools queried `error_match` (renamed from `is_problem` in PR #4) while the
+> loaded table still used the old schema, so the SELECT failed. The tools now
+> surface the real SQL error and hint to reload; after one reload
+> (`python load_logs.py --openstack ./data/OpenStack`) the full cross-dataset
+> manager view above works, as shown.
 
 ---
 
