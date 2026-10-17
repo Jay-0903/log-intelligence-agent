@@ -159,6 +159,20 @@ Claude Desktop / Claude Code config (`claude_desktop_config.json`):
 }
 ```
 
+> **Use the full path to `python` on Windows.** `"command": "python"` often
+> fails to resolve from Claude Desktop. Use the absolute interpreter path, e.g.
+> `"command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python314\\python.exe"`.
+>
+> **Microsoft Store Python:** if you installed Python from the Microsoft Store,
+> the real executable is under a `WindowsApps\PythonSoftwareFoundation.Python.*`
+> package folder, e.g.
+> `C:\\Users\\<you>\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\\python.exe`
+> (the `WindowsApps\\python.exe` *alias* usually does **not** work for MCP). Find
+> it with `where.exe python` or
+> `python -c "import sys; print(sys.executable)"` and paste that exact path as
+> `command`. The server appears **Running** in Claude → Settings → Developer when
+> correct (see the checklist below).
+
 Then ask Claude, e.g. *"As an engineer, investigate kernel instruction cache
 parity errors in BGL and show nearby events."* It will pick `search_logs_fulltext`
 then `get_nearby_events`.
