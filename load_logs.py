@@ -30,13 +30,15 @@ import glob
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
-from db import TABLE, execute, get_conn, scalar
+from db import TABLE, execute, get_conn, query, scalar
 import fts
 import schema
 
 BATCH = 2000
+BULK_BATCH = 20000          # larger batches for the full corpus
 OPENSTACK_TABLE = "openstack_logs"
 ALL_TABLE = "logs"
 
@@ -87,6 +89,46 @@ def load_bgl(cur, log_file):
         cur.executemany(insert, batch)
     print(f"[ok] Loaded {total:,} BGL lines into '{TABLE}'")
     return total
+
+
+def load_bgl_bulk(mount_path):
+    """Fast full-corpus BGL load using SereneDB's server-side file reader.
+
+    The organiser Q&A: mount a folder into the container
+    (-v "$PWD/data":/data) and read it in place with read_csv('/data/...').
+    `mount_path` is the path AS SEEN BY THE SERVER (e.g. '/data/BGL.log').
+
+    BGL raw lines are space-separated with a free-text message tail, so we:
+      1. read each line as one column (a delimiter that never appears),
+      2. parse the 9 fixed fields + message tail in SQL with regexp_extract.
+    Only the parsed table and its index live locally.
+    """
+    execute(f"DROP TABLE IF EXISTS {TABLE}")
+    execute(f"""
+        CREATE TABLE {TABLE} AS
+        WITH raw AS (
+            SELECT line, row_number() OVER () AS id
+            FROM read_csv(%s, delim := e'\\x01', header := false,
+                          columns := {{'line': 'VARCHAR'}})
+        )
+        SELECT
+            id,
+            regexp_extract(line, '^(\\S+)', 1)                       AS alert,
+            TRY_CAST(regexp_extract(line, '^\\S+\\s+(\\d+)', 1) AS BIGINT) AS ts,
+            regexp_extract(line, '^(?:\\S+\\s+){{2}}(\\S+)', 1)        AS log_date,
+            regexp_extract(line, '^(?:\\S+\\s+){{3}}(\\S+)', 1)        AS node,
+            regexp_extract(line, '^(?:\\S+\\s+){{4}}(\\S+)', 1)        AS event_time,
+            regexp_extract(line, '^(?:\\S+\\s+){{5}}(\\S+)', 1)        AS node2,
+            regexp_extract(line, '^(?:\\S+\\s+){{6}}(\\S+)', 1)        AS system,
+            regexp_extract(line, '^(?:\\S+\\s+){{7}}(\\S+)', 1)        AS component,
+            regexp_extract(line, '^(?:\\S+\\s+){{8}}(\\S+)', 1)        AS severity,
+            regexp_extract(line, '^(?:\\S+\\s+){{9}}(.*)$', 1)         AS message,
+            line                                                     AS raw
+        FROM raw
+    """, (mount_path,))
+    n = int(scalar(f"SELECT COUNT(*) AS n FROM {TABLE}") or 0)
+    print(f"[ok] Bulk-loaded {n:,} BGL lines into '{TABLE}' via read_csv({mount_path})")
+    return n
 
 
 # ===========================================================================
@@ -306,6 +348,7 @@ def build_indexes(loaded_bgl, loaded_os):
 #  main
 # ===========================================================================
 def main():
+    global BATCH
     ap = argparse.ArgumentParser(description="Load BGL + OpenStack into SereneDB")
     ap.add_argument("--bgl", help="Path to BGL .log file (full corpus)")
     ap.add_argument("--openstack", help="Path to OpenStack .log file or folder")
@@ -315,6 +358,11 @@ def main():
                     help="Use the 2k samples from the loghub repo")
     ap.add_argument("--all-systems", action="store_true",
                     help="Also load every loghub sample system into `logs` (optional)")
+    ap.add_argument("--server-bgl",
+                    help="Server-side path to BGL.log for the fast bulk load via "
+                         "read_csv, e.g. /data/BGL.log (needs the folder mounted "
+                         'into the container: -v "$PWD/data":/data). Fastest for '
+                         "the full 4.7M-line corpus.")
     args = ap.parse_args()
 
     bgl_path = args.bgl
@@ -325,42 +373,61 @@ def main():
         os_sample = os.path.join(args.loghub, "OpenStack", "OpenStack_2k.log")
         os_paths = [os_sample] if os.path.exists(os_sample) else []
     else:
+        BATCH = BULK_BATCH   # bigger batches for the full corpus
         if args.openstack:
             os_paths = discover_openstack(args.openstack)
 
-    if not bgl_path and not os_paths:
+    if not bgl_path and not os_paths and not args.server_bgl:
         raise SystemExit(
-            "Nothing to load. Provide --bgl / --openstack for the full corpus, "
-            "or --sample --loghub ./loghub for the 2k demo.")
+            "Nothing to load. Provide --bgl / --openstack (or --server-bgl) for "
+            "the full corpus, or --sample --loghub ./loghub for the 2k demo.")
 
+    t0 = time.perf_counter()
     loaded_bgl = loaded_os = 0
-    with get_conn().cursor() as cur:
-        print("Creating team-ownership table (component_owners)...")
-        schema.create_owners_table(execute)
-        print(f"   {len(schema.COMPONENT_OWNERS)} component->team mappings\n")
 
-        if bgl_path and os.path.exists(bgl_path):
-            print(f"Loading BGL from {bgl_path} ...")
+    print("Creating team-ownership table (component_owners)...")
+    schema.create_owners_table(execute)
+    print(f"   {len(schema.COMPONENT_OWNERS)} component->team mappings\n")
+
+    # --- BGL ---
+    tb = time.perf_counter()
+    if args.server_bgl:
+        print(f"Bulk-loading BGL via server read_csv({args.server_bgl}) ...")
+        loaded_bgl = load_bgl_bulk(args.server_bgl)
+    elif bgl_path and os.path.exists(bgl_path):
+        print(f"Loading BGL from {bgl_path} ...")
+        with get_conn().cursor() as cur:
             loaded_bgl = load_bgl(cur, bgl_path)
-        elif bgl_path:
-            print(f"[warn] BGL file not found: {bgl_path}")
+    elif bgl_path:
+        print(f"[warn] BGL file not found: {bgl_path}")
+    bgl_secs = time.perf_counter() - tb
 
-        if os_paths:
-            print(f"Loading OpenStack from {len(os_paths)} file(s) ...")
+    # --- OpenStack ---
+    to = time.perf_counter()
+    if os_paths:
+        print(f"Loading OpenStack from {len(os_paths)} file(s) ...")
+        with get_conn().cursor() as cur:
             loaded_os = load_openstack(cur, os_paths)
-        elif not args.sample:
-            print("[warn] No OpenStack files found")
+    elif not args.sample:
+        print("[warn] No OpenStack files found")
+    os_secs = time.perf_counter() - to
 
-        if args.all_systems:
-            print("\nLoading optional all-systems table...")
+    if args.all_systems:
+        print("\nLoading optional all-systems table...")
+        with get_conn().cursor() as cur:
             load_all_systems(cur, args.loghub)
 
+    ti = time.perf_counter()
     build_indexes(loaded_bgl, loaded_os)
+    idx_secs = time.perf_counter() - ti
+    total_secs = time.perf_counter() - t0
 
     print("\n=== Load summary ===")
-    print(f"  BGL ({TABLE}):            {loaded_bgl:,} lines")
-    print(f"  OpenStack ({OPENSTACK_TABLE}): {loaded_os:,} lines")
+    print(f"  BGL ({TABLE}):            {loaded_bgl:,} lines   ({bgl_secs:.1f}s)")
+    print(f"  OpenStack ({OPENSTACK_TABLE}): {loaded_os:,} lines   ({os_secs:.1f}s)")
     print(f"  Ownership rows:           {len(schema.COMPONENT_OWNERS)}")
+    print(f"  Index build:              {idx_secs:.1f}s")
+    print(f"  TOTAL load time:          {total_secs:.1f}s")
     print("\nDone. Run:  python tools.py   (self-test)   or   python mcp_server.py")
 
 

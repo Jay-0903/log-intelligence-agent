@@ -106,7 +106,8 @@ def _terms(phrase):
     return words[:_MAX_TERMS]
 
 
-def search(index_name, text_col, phrase, select_cols, limit=20, mode="any"):
+def search(index_name, text_col, phrase, select_cols, limit=20, mode="any",
+           extra_where="", extra_params=None):
     """Run a BM25 full-text search against an inverted index.
 
     `mode`:
@@ -114,6 +115,10 @@ def search(index_name, text_col, phrase, select_cols, limit=20, mode="any"):
                   normal keyword search and what the engineer wants. BM25 still
                   ranks rows that match more / rarer terms higher.
       "phrase" -> match the exact phrase (single ts_phrase, strict adjacency).
+
+    `extra_where` / `extra_params`: an optional additional predicate (already
+    prefixed with ' AND '), e.g. a time-range filter. The full-text match group
+    is parenthesised first so OR/AND precedence stays correct.
 
     Returns (rows, sql). A `score` column (BM25) is added and rows are ranked
     by it descending.
@@ -125,22 +130,25 @@ def search(index_name, text_col, phrase, select_cols, limit=20, mode="any"):
     """
     cols = ", ".join(select_cols)
     bm25 = f"ROUND(BM25({index_name}.tableoid)::NUMERIC, 3) AS score"
+    extra_params = list(extra_params or [])
 
     if mode == "phrase":
-        where = f"{text_col} @@ ts_phrase(%s)"
-        params = [phrase, limit]
-        shown_vals = [phrase, limit]
+        match_grp = f"{text_col} @@ ts_phrase(%s)"
+        match_params = [phrase]
     else:
         terms = _terms(phrase) or [phrase]
-        where = " OR ".join(f"{text_col} @@ ts_phrase(%s)" for _ in terms)
-        params = terms + [limit]
-        shown_vals = terms + [limit]
+        match_grp = " OR ".join(f"{text_col} @@ ts_phrase(%s)" for _ in terms)
+        match_params = list(terms)
+
+    # Parenthesise the OR group so an AND time filter binds correctly.
+    where = f"({match_grp}){extra_where}"
+    params = match_params + extra_params + [limit]
 
     sql = (f"SELECT {cols}, {bm25} FROM {index_name} "
            f"WHERE {where} ORDER BY score DESC LIMIT %s")
     rows = query(sql, params)
 
     shown = sql
-    for v in shown_vals:
+    for v in params:
         shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
     return rows, shown

@@ -60,6 +60,47 @@ def _count(table, where="", params=None):
     return int(scalar(sql, params) or 0)
 
 
+def _to_epoch(value):
+    """Accept a unix ts (int/str digits) or a date/datetime string and return
+    unix seconds. Returns None if value is falsy or unparseable."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    import datetime as _dt
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = _dt.datetime.strptime(s, fmt)
+            return int(dt.replace(tzinfo=_dt.timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def _time_clause(col, start, end):
+    """Build an SQL time-range predicate on a unix-seconds column.
+
+    Returns (sql_fragment, params, period_text). The fragment is always
+    prefixed with ' AND ' when non-empty. period_text describes the window for
+    the scope string ('whole corpus' when no bounds given)."""
+    s, e = _to_epoch(start), _to_epoch(end)
+    frags, params, desc = [], [], []
+    if s is not None:
+        frags.append(f"{col} >= %s")
+        params.append(s)
+        desc.append(f"from {s}")
+    if e is not None:
+        frags.append(f"{col} <= %s")
+        params.append(e)
+        desc.append(f"to {e}")
+    sql = (" AND " + " AND ".join(frags)) if frags else ""
+    period = " ".join(desc) if desc else "whole corpus (no time filter)"
+    return sql, params, period
+
+
 def corpus_scope():
     """How big is each table right now? Used to state data scope in answers."""
     out = {}
@@ -79,13 +120,16 @@ def _table_exists(table):
         return False
 
 
-def _like_fallback(table, cols, phrase, limit, order_by="id"):
+def _like_fallback(table, cols, phrase, limit, order_by="id",
+                   extra_where="", extra_params=None):
     """Word-wise LIKE search used when the BM25 index is unavailable.
 
     Splits the phrase into words and ANDs a LIKE per word, keeping only words
     that actually occur in the column (so an extra word like 'kernel' doesn't
     zero out a match on 'instruction cache parity error'). Returns (rows, sql).
+    `extra_where`/`extra_params` append an optional time-range predicate.
     """
+    extra_params = list(extra_params or [])
     words = [w for w in re.findall(r"[A-Za-z0-9_.\-]+", phrase.lower())
              if len(w) > 1]
     # Keep only words that appear somewhere in the message column.
@@ -98,15 +142,14 @@ def _like_fallback(table, cols, phrase, limit, order_by="id"):
             present.append(w)
     terms = present or words or [phrase.lower()]
 
-    where = " AND ".join("LOWER(message) LIKE %s" for _ in terms)
-    params = [f"%{t}%" for t in terms] + [limit]
+    where = "(" + " AND ".join("LOWER(message) LIKE %s" for _ in terms) + ")"
+    params = [f"%{t}%" for t in terms] + extra_params + [limit]
     sql = (f'SELECT {", ".join(cols)} FROM {table} '
-           f'WHERE {where} ORDER BY {order_by} LIMIT %s')
+           f'WHERE {where}{extra_where} ORDER BY {order_by} LIMIT %s')
     rows = query(sql, params)
     shown = sql
-    for t in terms:
-        shown = shown.replace("%s", repr(f"%{t}%"), 1)
-    shown = shown.replace("%s", str(limit), 1)
+    for v in params:
+        shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
     shown += "   -- [fallback: word-wise LIKE, FTS index unavailable]"
     return rows, shown
 
@@ -114,22 +157,29 @@ def _like_fallback(table, cols, phrase, limit, order_by="id"):
 # ===========================================================================
 #  ENGINEER TOOLS — full-text search + nearby events
 # ===========================================================================
-def search_bgl_fulltext(phrase, limit=15):
-    """TOOL (engineer): full-text BM25 search of BGL messages.
+def search_bgl_fulltext(phrase, limit=15, start=None, end=None):
+    """TOOL (engineer): full-text BM25 search of BGL messages, with optional
+    time filter.
 
-    Input:  phrase (str), limit (int, default 15)
+    Input:  phrase (str), limit (int, default 15),
+            start/end (optional, unix ts or 'YYYY-MM-DD'[ HH:MM:SS]) — restrict
+            to events in [start, end].
     Output: ranked log lines (alert, ts, node, severity, message, score).
     Uses SereneDB's inverted index `bgl_idx` and the @@ / ts_phrase operator.
     """
     cols = ['id', 'alert', 'ts', 'node', 'event_time AS "datetime"',
             'severity', 'component', 'message']
+    tw, tp, period = _time_clause("ts", start, end)
     try:
-        rows, sql = fts.search(BGL_IDX, "message", phrase, cols, limit)
+        rows, sql = fts.search(BGL_IDX, "message", phrase, cols, limit,
+                               extra_where=tw, extra_params=tp)
     except Exception:
-        rows, sql = _like_fallback(TABLE, cols, phrase, limit)
+        rows, sql = _like_fallback(TABLE, cols, phrase, limit,
+                                   extra_where=tw, extra_params=tp)
     env = _envelope("search_bgl_fulltext",
-                    f"BGL ({_count(TABLE):,} lines)",
-                    {"phrase": phrase}, sql, rows, limit)
+                    f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                    {"phrase": phrase, "start": start, "end": end},
+                    sql, rows, limit)
     return env
 
 
@@ -150,31 +200,38 @@ def get_nearby_events_bgl(ts, window_seconds=120, limit=20):
         sql, rows, limit)
 
 
-def search_openstack_fulltext(phrase, limit=15):
-    """TOOL (engineer): full-text BM25 search of OpenStack messages."""
+def search_openstack_fulltext(phrase, limit=15, start=None, end=None):
+    """TOOL (engineer): full-text BM25 search of OpenStack messages, with
+    optional time filter (start/end as unix ts or 'YYYY-MM-DD'[ HH:MM:SS])."""
     if not _table_exists(OPENSTACK_TABLE):
         return _missing_table_env("search_openstack_fulltext", OPENSTACK_TABLE)
-    cols = ['id', 'log_time', 'level', 'component', 'request_id',
+    cols = ['id', 'log_time', 'ts', 'level', 'component', 'request_id',
             'tenant_id', 'latency_ms', 'message']
+    tw, tp, period = _time_clause("ts", start, end)
     try:
-        rows, sql = fts.search(OPENSTACK_IDX, "message", phrase, cols, limit)
+        rows, sql = fts.search(OPENSTACK_IDX, "message", phrase, cols, limit,
+                               extra_where=tw, extra_params=tp)
     except Exception:
-        rows, sql = _like_fallback(OPENSTACK_TABLE, cols, phrase, limit)
+        rows, sql = _like_fallback(OPENSTACK_TABLE, cols, phrase, limit,
+                                   extra_where=tw, extra_params=tp)
     return _envelope("search_openstack_fulltext",
-                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
-                     {"phrase": phrase}, sql, rows, limit)
+                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
+                     {"phrase": phrase, "start": start, "end": end},
+                     sql, rows, limit)
 
 
 # ===========================================================================
 #  TEAM LEAD / MANAGER TOOLS — whole-corpus aggregation + ownership + trends
 # ===========================================================================
-def count_bgl_alerts_by_team(limit=20):
-    """TOOL (team lead/manager): whole-corpus BGL alert counts grouped by the
-    OWNING TEAM, via the supplied component_owners table.
+def count_bgl_alerts_by_team(limit=20, start=None, end=None):
+    """TOOL (team lead/manager): BGL alert counts grouped by the OWNING TEAM,
+    via the supplied component_owners table.
 
-    Output: team, component, alert_events, total_events, over the entire BGL
-    table (not a sample).
+    Default scope is the WHOLE corpus; pass start/end (unix ts or
+    'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period instead.
+    Output: team, component, events, alert_events.
     """
+    tw, tp, period = _time_clause("b.ts", start, end)
     sql = f"""
         SELECT COALESCE(o.team, 'Unmapped') AS team,
                b.component,
@@ -183,38 +240,44 @@ def count_bgl_alerts_by_team(limit=20):
         FROM {TABLE} b
         LEFT JOIN {OWNERS_TABLE} o
           ON o.dataset = 'BGL' AND o.component = b.component
+        WHERE 1=1{tw}
         GROUP BY team, b.component
         ORDER BY alert_events DESC, events DESC
         LIMIT {limit}
     """
-    rows = query(sql)
+    rows = query(sql, tp or None)
     return _envelope("count_bgl_alerts_by_team",
-                     f"BGL (whole corpus, {_count(TABLE):,} lines)",
-                     {"group_by": "team, component"}, sql, rows, limit)
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"group_by": "team, component", "start": start, "end": end},
+                     sql, rows, limit)
 
 
-def count_bgl_alert_categories(limit=20):
-    """TOOL (team lead): whole-corpus BGL alert-category counts (the 12
-    labelled categories; '-' = normal is excluded)."""
+def count_bgl_alert_categories(limit=20, start=None, end=None):
+    """TOOL (team lead): BGL alert-category counts (the 12 labelled categories;
+    '-' = normal excluded). Default scope is the WHOLE corpus; pass start/end
+    to count over a stated period."""
+    tw, tp, period = _time_clause("ts", start, end)
     sql = f"""
         SELECT alert AS category, COUNT(*) AS n
         FROM {TABLE}
-        WHERE alert <> '-'
+        WHERE alert <> '-'{tw}
         GROUP BY alert
         ORDER BY n DESC
         LIMIT {limit}
     """
-    rows = query(sql)
+    rows = query(sql, tp or None)
     return _envelope("count_bgl_alert_categories",
-                     f"BGL (whole corpus, {_count(TABLE):,} lines)",
-                     {"exclude": "alert = '-' (normal)"}, sql, rows, limit)
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"exclude": "alert = '-' (normal)",
+                      "start": start, "end": end}, sql, rows, limit)
 
 
-def bgl_trend_by_day(category=None, limit=400):
+def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
     """TOOL (team lead/manager): BGL alert volume per calendar day.
 
-    Input:  category (optional alert category to filter), limit
-    Output: date, alert_events per day across the whole BGL corpus (trend).
+    Input:  category (optional alert category to filter), limit,
+            start/end (optional period; default = whole corpus).
+    Output: date, alert_events per day (trend).
     """
     where = "ts > 0"
     params = []
@@ -223,6 +286,9 @@ def bgl_trend_by_day(category=None, limit=400):
         params.append(category)
     else:
         where += " AND alert <> '-'"
+    tw, tp, period = _time_clause("ts", start, end)
+    where += tw
+    params += tp
     sql = f"""
         SELECT CAST(to_timestamp(ts) AS DATE) AS day,
                COUNT(*) AS alert_events
@@ -234,8 +300,9 @@ def bgl_trend_by_day(category=None, limit=400):
     """
     rows = query(sql, params or None)
     return _envelope("bgl_trend_by_day",
-                     f"BGL (whole corpus, {_count(TABLE):,} lines)",
-                     {"category": category or "any alert"}, sql, rows, limit)
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"category": category or "any alert",
+                      "start": start, "end": end}, sql, rows, limit)
 
 
 def _missing_table_env(tool, table):
@@ -246,11 +313,15 @@ def _missing_table_env(tool, table):
     }
 
 
-def count_openstack_by_component():
-    """TOOL (team lead/manager): whole-corpus OpenStack counts grouped by nova
-    service, with error rate and the owning team."""
+def count_openstack_by_component(start=None, end=None):
+    """TOOL (team lead/manager): OpenStack counts grouped by nova service, with
+    error rate, avg latency and the owning team.
+
+    Default scope is the WHOLE corpus; pass start/end (unix ts or
+    'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period."""
     if not _table_exists(OPENSTACK_TABLE):
         return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
+    tw, tp, period = _time_clause("os.ts", start, end)
     sql = f"""
         SELECT os.component,
                COALESCE(o.team, 'Unmapped') AS team,
@@ -261,13 +332,18 @@ def count_openstack_by_component():
         FROM {OPENSTACK_TABLE} os
         LEFT JOIN {OWNERS_TABLE} o
           ON o.dataset = 'OpenStack' AND o.component = os.component
+        WHERE 1=1{tw}
         GROUP BY os.component, team
         ORDER BY problems DESC
     """
-    rows = query(sql)
+    try:
+        rows = query(sql, tp or None)
+    except Exception:
+        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
     return _envelope("count_openstack_by_component",
-                     f"OpenStack (whole corpus, {_count(OPENSTACK_TABLE):,} lines)",
-                     {"group_by": "component (nova service)"}, sql, rows, None)
+                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
+                     {"group_by": "component (nova service)",
+                      "start": start, "end": end}, sql, rows, None)
 
 
 def openstack_latency_stats():
@@ -286,7 +362,10 @@ def openstack_latency_stats():
         GROUP BY component
         ORDER BY avg_ms DESC
     """
-    rows = query(sql)
+    try:
+        rows = query(sql)
+    except Exception:
+        return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
     return _envelope("openstack_latency_stats",
                      f"OpenStack (whole corpus, {_count(OPENSTACK_TABLE):,} lines)",
                      {"metric": "latency_ms"}, sql, rows, None)

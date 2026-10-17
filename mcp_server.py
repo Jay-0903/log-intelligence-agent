@@ -49,19 +49,24 @@ def team_ownership() -> str:
 
 # ── Engineer ────────────────────────────────────────────────────────────────
 @mcp.tool()
-def search_logs_fulltext(dataset: str, phrase: str, limit: int = 15) -> str:
-    """ENGINEER full-text search. Find the most relevant log lines for a
-    phrase using SereneDB's BM25 inverted index.
+def search_logs_fulltext(dataset: str, phrase: str, limit: int = 15,
+                         start: str = "", end: str = "") -> str:
+    """ENGINEER full-text search with optional time filter. Find the most
+    relevant log lines for a phrase using SereneDB's BM25 inverted index.
 
     Inputs:
       dataset: "bgl" or "openstack"
       phrase:  words/phrase to search for (e.g. "kernel instruction cache parity")
       limit:   max rows to return (default 15; results are ranked, truncation flagged)
-    Returns: ranked log lines with a BM25 `score`, plus the SQL and filters used.
-    Use this to find WHAT failed before pulling nearby context."""
+      start/end: optional time filter — unix seconds or 'YYYY-MM-DD'[ HH:MM:SS].
+                 Restrict the search to events in that window.
+    Returns: ranked log lines with a BM25 `score`, plus the SQL, filters and
+    period used. Use this to find WHAT failed before pulling nearby context."""
+    s = start or None
+    e = end or None
     if dataset.lower().startswith("open"):
-        return _json(tools.search_openstack_fulltext(phrase, limit))
-    return _json(tools.search_bgl_fulltext(phrase, limit))
+        return _json(tools.search_openstack_fulltext(phrase, limit, s, e))
+    return _json(tools.search_bgl_fulltext(phrase, limit, s, e))
 
 
 @mcp.tool()
@@ -74,36 +79,42 @@ def get_nearby_events(ts: int, window_seconds: int = 120, limit: int = 20) -> st
 
 # ── Team lead ───────────────────────────────────────────────────────────────
 @mcp.tool()
-def alert_categories(limit: int = 20) -> str:
-    """TEAM LEAD recurring patterns. Whole-corpus BGL counts per alert category
-    (the 12 labelled categories; normal lines excluded). Shows which problems
-    recur and how often across ALL of BGL, not a sample."""
-    return _json(tools.count_bgl_alert_categories(limit))
+def alert_categories(limit: int = 20, start: str = "", end: str = "") -> str:
+    """TEAM LEAD recurring patterns. BGL counts per alert category (the 12
+    labelled categories; normal lines excluded). Default scope is the WHOLE
+    corpus; pass start/end (unix or 'YYYY-MM-DD') to count over a stated period.
+    The scope string states the period used."""
+    return _json(tools.count_bgl_alert_categories(limit, start or None, end or None))
 
 
 @mcp.tool()
-def count_alerts_by_team(limit: int = 20) -> str:
-    """TEAM LEAD ownership view. Whole-corpus BGL events grouped by OWNING TEAM
-    and component (joined to the ownership table), with alert counts. Use it to
-    say which TEAM should investigate first."""
-    return _json(tools.count_bgl_alerts_by_team(limit))
+def count_alerts_by_team(limit: int = 20, start: str = "", end: str = "") -> str:
+    """TEAM LEAD ownership view. BGL events grouped by OWNING TEAM and component
+    (joined to the ownership table), with alert counts. Default scope is the
+    WHOLE corpus; pass start/end to count over a stated period. Use it to say
+    which TEAM should investigate first."""
+    return _json(tools.count_bgl_alerts_by_team(limit, start or None, end or None))
 
 
 @mcp.tool()
-def trend_by_day(category: str = "", limit: int = 400) -> str:
-    """TEAM LEAD / MANAGER trend. BGL alert volume per calendar day across the
-    whole corpus. Pass a `category` to track one alert type over time, or leave
-    empty for all alerts. Use it for week-over-week / rising-trend claims."""
-    return _json(tools.bgl_trend_by_day(category or None, limit))
+def trend_by_day(category: str = "", limit: int = 400,
+                 start: str = "", end: str = "") -> str:
+    """TEAM LEAD / MANAGER trend. BGL alert volume per calendar day. Pass a
+    `category` to track one alert type over time, or leave empty for all alerts.
+    Default scope is the whole corpus; pass start/end to bound the period. Use
+    it for week-over-week / rising-trend claims."""
+    return _json(tools.bgl_trend_by_day(category or None, limit,
+                                        start or None, end or None))
 
 
 # ── Team lead / Manager (OpenStack aggregation) ─────────────────────────────
 @mcp.tool()
-def openstack_by_component() -> str:
-    """TEAM LEAD / MANAGER aggregation. Whole-corpus OpenStack counts per nova
-    service (nova-api/compute/scheduler): total lines, problem lines, problem %,
-    average latency, and the owning team. The core OpenStack error-rate view."""
-    return _json(tools.count_openstack_by_component())
+def openstack_by_component(start: str = "", end: str = "") -> str:
+    """TEAM LEAD / MANAGER aggregation. OpenStack counts per nova service
+    (nova-api/compute/scheduler): total lines, problem lines, problem %, average
+    latency, and the owning team. Default scope is the WHOLE corpus; pass
+    start/end to count over a stated period. The core OpenStack error-rate view."""
+    return _json(tools.count_openstack_by_component(start or None, end or None))
 
 
 @mcp.tool()
