@@ -1,13 +1,132 @@
+import re
+
 from tools import (
     search_logs, get_nearby_events, count_by_severity,
-    count_alerts, top_failing_nodes, risk_summary
+    count_alerts, top_failing_nodes, risk_summary,
+    problems_by_system, search_all, top_events, system_summary,
 )
+
+# ── Multi-system support ─────────────────────────────────────────────────────
+# Words in a question that point at one of the 16 loghub systems
+SYSTEM_ALIASES = {
+    "android": "Android", "apache": "Apache", "hdfs": "HDFS", "hpc": "HPC",
+    "hadoop": "Hadoop", "healthapp": "HealthApp", "health app": "HealthApp",
+    "linux": "Linux", "mac": "Mac", "macos": "Mac", "openssh": "OpenSSH",
+    "ssh": "OpenSSH", "openstack": "OpenStack", "nova": "OpenStack",
+    "proxifier": "Proxifier", "proxy": "Proxifier", "spark": "Spark",
+    "thunderbird": "Thunderbird", "windows": "Windows",
+    "zookeeper": "Zookeeper", "bgl": "BGL",
+}
+CROSS_SYSTEM = ("all systems", "which system", "every system", "each system",
+                "compare", "across", "overall", "systems")
+STOPWORDS = {"show", "me", "the", "what", "which", "are", "is", "in", "on",
+             "for", "any", "all", "of", "and", "or", "a", "an", "logs", "log",
+             "events", "entries", "there", "happened", "find", "list", "give",
+             "most", "common", "about", "with", "from", "did", "does", "do",
+             "how", "many", "system", "errors?", "should", "we", "top"}
+
+
+def detect_system(question):
+    q = question.lower()
+    for alias in sorted(SYSTEM_ALIASES, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(alias)}\b", q):
+            return SYSTEM_ALIASES[alias]
+    return None
+
+
+def _keywords(question, system):
+    aliases = {a for a, s in SYSTEM_ALIASES.items() if s == system}
+    words = [w for w in re.findall(r"[a-z0-9_.-]+", question.lower())
+             if len(w) > 2 and w not in STOPWORDS and w not in aliases]
+    phrases = [" ".join(words[i:i + 2]) for i in range(len(words) - 1)]
+    return phrases + words
+
+
+def answer_multi(role, question):
+    """Answer questions about the 16 loghub systems.
+    Returns None when the question is about BGL only (handled below)."""
+    q = question.lower()
+    system = detect_system(question)
+    out = []
+
+    # ── Questions comparing systems ──
+    if system is None and any(w in q for w in CROSS_SYSTEM):
+        rows = problems_by_system()
+        out.append("System health across all loghub datasets (worst first):")
+        for r in rows:
+            bar = "█" * int(r["pct"] // 2)
+            out.append(f"  {r['system']:<12} {r['problems']:>5}/{r['total']:<5}"
+                       f" {r['pct']:>5}%  {bar}")
+        if role == "manager":
+            worst = [r["system"] for r in rows[:3]]
+            out.append("")
+            out.append(f"✅ RECOMMENDATION: focus first on {', '.join(worst)} — "
+                       "they have the highest share of problem events.")
+        return "\n".join(out)
+
+    if system is None or system == "BGL":
+        return None  # fall through to the detailed BGL answers
+
+    # ── Questions about one system ──
+    if role == "engineer":
+        hits, used = [], None
+        for kw in _keywords(question, system):
+            hits = search_all(kw, system=system, limit=8)
+            if hits:
+                used = kw
+                break
+        if not hits:
+            hits = search_all("", system=system, problems_only=True, limit=8)
+            used = "problem events"
+        out.append(f"{system} — entries matching '{used}' ({len(hits)} shown):")
+        for h in hits:
+            flag = "⚠️ " if h["is_problem"] else "   "
+            out.append(f"  {flag}[{h['level'] or '-'}] {h['log_time']} "
+                       f"{h['component']} — {h['content'][:90]}")
+        return "\n".join(out)
+
+    s = system_summary(system)
+    out.append(f"{system}: {s['problems']} problem events out of {s['total']} "
+               f"({s['pct']}%)")
+
+    if role in ("teamlead", "team lead"):
+        out.append(f"  Levels: {s['levels']}")
+        out.append("\n  Most common event patterns:")
+        for e in top_events(system, limit=8):
+            out.append(f"    {e['n']:>4}x  {e['event_template'][:85]}")
+        if s["problem_components"]:
+            out.append("\n  Components producing problems:")
+            for c, n in s["problem_components"].items():
+                out.append(f"    {c}: {n}")
+        return "\n".join(out)
+
+    # manager
+    out.append("")
+    out.append("🔴 TOP PROBLEM PATTERNS:")
+    for e in s["top_problem_events"]:
+        out.append(f"  • {e['n']}x  {e['event_template'][:85]}")
+    out.append("")
+    if s["pct"] > 10:
+        out.append(f"⚠️  {s['pct']}% of {system} events are problems — needs attention.")
+    elif s["problems"]:
+        out.append(f"🟡 {s['pct']}% problem rate — monitor, not urgent.")
+    else:
+        out.append("🟢 No problem events detected.")
+    if s["problem_components"]:
+        worst = next(iter(s["problem_components"]))
+        out.append(f"📍 Start with component '{worst}' — the main source of problems.")
+    return "\n".join(out)
+
 
 # ── Simple rule-based agent (no API key needed) ──────────────────────────────
 # Answers questions for 3 roles: Engineer, Team Lead, Manager
 
 def answer_engineer(question):
     """Engineer wants: what happened, where, show me nearby events."""
+    multi = answer_multi("engineer", question)
+    if multi:
+        return multi
+
     q = question.lower()
     results = []
 
@@ -66,6 +185,10 @@ def answer_engineer(question):
 
 def answer_team_lead(question):
     """Team Lead wants: patterns, counts, trends, recurring issues."""
+    multi = answer_multi("teamlead", question)
+    if multi:
+        return multi
+
     q = question.lower()
     results = []
 
@@ -105,6 +228,10 @@ def answer_team_lead(question):
 
 def answer_manager(question):
     """Manager wants: risks, priorities, what to do."""
+    multi = answer_multi("manager", question)
+    if multi:
+        return multi
+
     summary = risk_summary()
     results = []
 
@@ -148,6 +275,9 @@ def run_demo():
         ("ENGINEER",  "Show me instruction cache parity errors and what happened nearby"),
         ("TEAM LEAD", "What are the recurring alert patterns and severity levels?"),
         ("MANAGER",   "What are the top risks and what should we do?"),
+        ("ENGINEER",  "Show me failed password attempts in ssh"),
+        ("TEAM LEAD", "What are the most common events in Hadoop?"),
+        ("MANAGER",   "Which systems should we worry about across all systems?"),
     ]
 
     for role, question in demo_questions:
@@ -169,6 +299,8 @@ def run_demo():
     print("INTERACTIVE MODE — type your question (or 'quit')")
     print("Start with: engineer / teamlead / manager")
     print("Example: engineer: show errors on node R30")
+    print("         teamlead: what happens most in zookeeper?")
+    print("         manager: compare all systems")
     print("=" * 60)
 
     while True:
