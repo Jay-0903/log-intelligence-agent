@@ -133,10 +133,20 @@ def trend_by_day(category: str = "", limit: int = 400,
                  start: str = "", end: str = "") -> str:
     """TEAM LEAD / MANAGER trend. BGL alert volume per calendar day. Pass a
     `category` to track one alert type over time, or leave empty for all alerts.
-    Default scope is the whole corpus; pass start/end to bound the period. Use
-    it for week-over-week / rising-trend claims."""
+    Default scope is the whole corpus; pass start/end to bound the period."""
     return _json(tools.bgl_trend_by_day(category or None, limit,
                                         start or None, end or None))
+
+
+@mcp.tool()
+def trend_by_week(category: str = "", limit: int = 60,
+                  start: str = "", end: str = "") -> str:
+    """TEAM LEAD / MANAGER week-over-week trend. BGL alert volume per week
+    (date_trunc('week', ...)). Pass a `category` to track one alert type, or
+    leave empty for all alerts; start/end bound the period. Use this for the
+    brief's week-over-week questions."""
+    return _json(tools.bgl_trend_by_week(category or None, limit,
+                                         start or None, end or None))
 
 
 # ── Team lead / Manager (OpenStack aggregation) ─────────────────────────────

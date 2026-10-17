@@ -42,6 +42,13 @@ plus pre-computed summaries — so millions of log lines never have to fit in a 
 - **Facts vs. hypotheses are separated**, and the manager view uses *measured
   frequency only* — no invented downtime, cost or customer impact.
 
+> **SQL verified against the official docs.** We connected the SereneDB docs MCP
+> server (`serenedb-docs`) and used `search_docs` / `read_section` to confirm the
+> full-text operators, BM25 scoring, inverted-index creation + refresh, remote
+> `read_parquet` syntax and date-bucket functions used here. SereneDB-specific
+> syntax is isolated in `fts.py` (search/index) and `otel.py` (remote data) so it
+> is easy to keep in step with the docs.
+
 ---
 
 ## Setup (from a clean checkout)
@@ -159,11 +166,12 @@ then `get_nearby_events`.
 **Verify the MCP connection (quick check):**
 
 1. Restart Claude Desktop / Claude Code after editing the config.
-2. Confirm the `log-intelligence` server appears and lists **13 tools**
+2. Confirm the `log-intelligence` server appears and lists **14 tools**
    (`corpus_scope`, `team_ownership`, `search_logs_fulltext`,
    `get_nearby_events`, `request_trace`, `alert_categories`, `alert_profile`,
    `top_nodes_for_alert`, `count_alerts_by_team`, `trend_by_day`,
-   `openstack_by_component`, `latency_stats`, plus the optional `otel_*` tools).
+   `trend_by_week`, `openstack_by_component`, `latency_stats`, plus the optional
+   `otel_*` tools).
 3. Ask: *"Call corpus_scope"* — you should get BGL/OpenStack line counts back.
 4. Then run one question per role (see `docs/DEMO.md`).
 
@@ -189,6 +197,7 @@ ran), `rows`, `count`, `truncated`, `limit`.
 | `top_nodes_for_alert` | team lead / engineer | `category`, `limit`, `start`/`end` | nodes with the most lines of a category (names for concrete next steps) |
 | `count_alerts_by_team` | team lead | `limit`, `start`/`end` (period) | BGL events grouped by owning team/component |
 | `trend_by_day` | team lead / manager | `category`, `limit`, `start`/`end` | BGL alert volume per calendar day (trend) |
+| `trend_by_week` | team lead / manager | `category`, `limit`, `start`/`end` | BGL alert volume per week (week-over-week) |
 | `openstack_by_component` | team lead / manager | `start`/`end` (period) | OpenStack per-service totals, **error-keyword** rate (not labelled anomalies), avg latency, owning team |
 | `latency_stats` | manager / team lead | – | per-service latency distribution: count/avg/min/**p50/p95/p99**/max |
 
