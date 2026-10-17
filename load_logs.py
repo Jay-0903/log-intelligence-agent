@@ -91,6 +91,32 @@ def load_bgl(cur, log_file):
     return total
 
 
+def clean_bgl_file(src):
+    """Write a UTF-8-clean copy of a BGL log next to it (<name>_clean.log).
+
+    The full BGL.log has a few invalid UTF-8 bytes that break SereneDB's
+    inverted-index build. We stream line by line, decode bytes with
+    errors='replace' (invalid bytes -> U+FFFD), and re-encode as valid UTF-8.
+    Run this ONCE, then load the cleaned file with --server-bgl. Returns the
+    cleaned path. Streaming keeps memory flat on the 709 MB file.
+    """
+    base, ext = os.path.splitext(src)
+    dst = f"{base}_clean{ext or '.log'}"
+    replaced = 0
+    t0 = time.perf_counter()
+    with open(src, "rb") as fin, open(dst, "w", encoding="utf-8",
+                                      newline="") as fout:
+        for raw in fin:                       # iterate bytes line by line
+            text = raw.decode("utf-8", errors="replace")
+            replaced += text.count("\uFFFD")
+            fout.write(text)
+    secs = time.perf_counter() - t0
+    print(f"[ok] Wrote {dst} ({replaced} invalid byte(s) replaced) in {secs:.1f}s")
+    print(f"     Now load it:  python load_logs.py --server-bgl /data/"
+          f"{os.path.basename(dst)} --openstack ...")
+    return dst
+
+
 def load_bgl_bulk(mount_path):
     """Fast full-corpus BGL load using SereneDB's server-side file reader.
 
@@ -103,11 +129,20 @@ def load_bgl_bulk(mount_path):
       2. parse the 9 fixed fields + message tail in SQL with regexp_extract.
     Only the parsed table and its index live locally.
 
-    encoding := 'latin-1': the FULL BGL.log contains invalid UTF-8 bytes (the 2k
-    sample does not). Without this, the inverted index build later fails with
-    "Invalid unicode (byte sequence mismatch)" and search silently falls back to
-    LIKE. latin-1 maps every byte 1:1 so no byte sequence is rejected. (SereneDB
-    read_csv supports encoding = utf-8 | utf-16 | latin-1.)
+    IMPORTANT — invalid UTF-8 in the FULL BGL.log: the full file contains a few
+    invalid UTF-8 bytes (the 2k sample does not). If you load it raw, the
+    inverted-index build fails with "Invalid unicode (byte sequence mismatch)"
+    and search silently falls back to LIKE. Do NOT fix this with
+    `encoding := 'latin-1'` on read_csv — that makes the server-side read
+    pathologically slow (per-byte decode path: 18+ min / stuck vs. 41 s). Instead
+    pre-clean the file ONCE to valid UTF-8 and point --server-bgl at the cleaned
+    copy:
+
+        python load_logs.py --clean-bgl path/to/BGL.log      # writes BGL_clean.log
+        # then mount ./data and:
+        python load_logs.py --server-bgl /data/BGL_clean.log --openstack ...
+
+    read_csv then runs at full speed (default utf-8) and the index builds clean.
     """
     execute(f"DROP TABLE IF EXISTS {TABLE}")
     execute(f"""
@@ -115,7 +150,6 @@ def load_bgl_bulk(mount_path):
         WITH raw AS (
             SELECT line, row_number() OVER () AS id
             FROM read_csv(%s, delim := e'\\x01', header := false,
-                          encoding := 'latin-1',
                           columns := {{'line': 'VARCHAR'}})
         )
         SELECT
@@ -373,9 +407,14 @@ def main():
                     help="Also load every loghub sample system into `logs` (optional)")
     ap.add_argument("--server-bgl",
                     help="Server-side path to BGL.log for the fast bulk load via "
-                         "read_csv, e.g. /data/BGL.log (needs the folder mounted "
-                         'into the container: -v "$PWD/data":/data). Fastest for '
-                         "the full 4.7M-line corpus.")
+                         "read_csv, e.g. /data/BGL_clean.log (needs the folder "
+                         'mounted: -v "$PWD/data":/data). Fastest for the full '
+                         "4.7M-line corpus. Use the _clean.log from --clean-bgl.")
+    ap.add_argument("--clean-bgl", metavar="PATH",
+                    help="One-time: write a UTF-8-clean <name>_clean.log next to "
+                         "PATH (the full BGL.log has invalid UTF-8 bytes that "
+                         "break the index build). Then load the cleaned file with "
+                         "--server-bgl. Does nothing else.")
     ap.add_argument("--otel-files", type=int, metavar="N",
                     help="OPTIONAL huge-datasets award: create a view over the "
                          "first N remote OpenTelemetry Parquet files (1-50; one "
@@ -384,6 +423,13 @@ def main():
                     help="With --otel-files: also build a BM25 index on Body and "
                          "run a full-text query (reports query times).")
     args = ap.parse_args()
+
+    # --- One-time: pre-clean a BGL log to valid UTF-8, then exit ---
+    if args.clean_bgl:
+        if not os.path.exists(args.clean_bgl):
+            raise SystemExit(f"[X] File not found: {args.clean_bgl}")
+        clean_bgl_file(args.clean_bgl)
+        return
 
     # --- OPTIONAL huge-datasets path (independent of BGL/OpenStack core) ---
     if args.otel_files:

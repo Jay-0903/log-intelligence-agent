@@ -108,15 +108,21 @@ Unzip/untar into the `./data` folder you mounted into the container, then load:
 # Client-side parse (works anywhere; larger batches for the full corpus):
 python load_logs.py --bgl ./data/BGL.log --openstack ./data/openstack-logs
 
-# OR fast server-side bulk load for BGL via read_csv (needs ./data mounted):
-#   path is as the SERVER sees it, i.e. /data/BGL.log
-python load_logs.py --server-bgl /data/BGL.log --openstack ./data/openstack-logs
+# OR fast server-side bulk load via read_csv (needs ./data mounted). The full
+# BGL.log has a few invalid UTF-8 bytes that break the index build, so clean it
+# once first (writes ./data/BGL_clean.log), then load the cleaned file:
+python load_logs.py --clean-bgl ./data/BGL.log
+python load_logs.py --server-bgl /data/BGL_clean.log --openstack ./data/openstack-logs
 ```
 
-> The `--server-bgl` path streams the file inside SereneDB and parses fields
-> with SQL `regexp_extract` — fastest for 4.7M lines. If your SereneDB build
-> rejects any of that SQL, fall back to the proven client-side `--bgl` path
-> (same result, parses in Python). Both print row counts and load time.
+> The `--server-bgl` path streams the file inside SereneDB and parses fields with
+> SQL `regexp_extract` — fastest for 4.7M lines (~40 s). **Clean the full BGL.log
+> first** (`--clean-bgl`): it has invalid UTF-8 bytes that otherwise fail the
+> inverted-index build with "Invalid unicode (byte sequence mismatch)" and make
+> search fall back to LIKE. (Do *not* use `read_csv(encoding := 'latin-1')` — it
+> makes the server-side read pathologically slow.) The 2k sample needs no
+> cleaning. If your build rejects the bulk SQL, the client-side `--bgl` path is
+> the proven fallback (parses in Python with `errors="replace"`).
 
 The loader creates `bgl_logs`, `openstack_logs` and the `component_owners`
 ownership table, then builds BM25 inverted indexes and runs
@@ -263,6 +269,24 @@ Presentation: **[`docs/slides.pdf`](docs/slides.pdf)** (the deck). Demo script:
   taken from the inline `time:` field where present.
 
 ---
+
+## Troubleshooting
+
+- **"Catalog write-write conflict" on load.** Another connection is holding the
+  catalog (usually the MCP server inside Claude Desktop, or a previous load).
+  Close Claude Desktop (tray → Quit) or `docker restart serenedb`, then re-run
+  the loader.
+- **Search returns a `fallback_reason` "Invalid unicode (byte sequence
+  mismatch)".** The full BGL.log has invalid UTF-8 bytes. Clean it once with
+  `python load_logs.py --clean-bgl ./data/BGL.log` and load `BGL_clean.log` via
+  `--server-bgl`. Do **not** use `read_csv(encoding := 'latin-1')` (pathologically
+  slow).
+- **Search falls back to LIKE after a reload.** The MCP server caches one DB
+  connection. Restart Claude Desktop so it reconnects to the fresh tables; the
+  tools re-check the index per call, so a fresh connection reports the true state.
+- **`openstack_logs ... (QUERY ERROR) ... column error_match does not exist`.**
+  OpenStack was loaded under an older schema. Reload it:
+  `python load_logs.py --openstack ./data/openstack-logs`.
 
 ## Configuration
 
