@@ -466,6 +466,9 @@ then one-day bursts as retrospectives** (matches the recorded Claude session):
 4. **Look back at the bursts, but don't treat them as active:** KERNDTLB is
    152,734 lines but **99.6% on one day (2005-06-12)**, and KERNSTOR appears on
    only 4 days. Run a retrospective, not a standing work item. → Kernel Platform.
+   Note: **KERNSTOR (63,488 lines on 22,529 nodes, 100% on 2005-06-14) peaks on
+   the same day as KERNRTSP's 2,048-panic burst** — consistent with one
+   system-wide event that day (hypothesis, not established by the logs).
 5. **Monitor only:** nova-compute (0.20%), nova-scheduler (0 of 866), and the
    small BGL Interconnect / Control System / Observability components.
 
