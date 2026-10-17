@@ -299,7 +299,13 @@ def discover_openstack(path):
         files = []
         for pat in ("*.log", "*.log.*", "nova-*", "OpenStack*.log"):
             files += glob.glob(os.path.join(path, "**", pat), recursive=True)
-        return sorted(set(f for f in files if os.path.isfile(f)))
+        # Skip BGL*.log so pointing --openstack at ./data (which may also hold
+        # BGL.log) never ingests BGL into the OpenStack table. Point --openstack
+        # at the data/openstack subfolder for a clean load.
+        return sorted(set(
+            f for f in files
+            if os.path.isfile(f)
+            and not os.path.basename(f).lower().startswith("bgl")))
     return []
 
 

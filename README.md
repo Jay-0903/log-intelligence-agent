@@ -102,21 +102,33 @@ curl -L -o BGL.zip "https://zenodo.org/records/8196385/files/BGL.zip?download=1"
 curl -L -o OpenStack.tar.gz "https://zenodo.org/records/8196385/files/OpenStack.tar.gz?download=1"
 ```
 
-Unzip/untar into the `./data` folder you mounted into the container, then load:
+Extract both into a `./data` folder (which you also mount into the container).
+BGL.zip contains `BGL.log`; OpenStack.tar.gz extracts to OpenStack `*.log` files
+(`openstack_normal1.log`, `openstack_normal2.log`, `openstack_abnormal.log`) plus
+`anomaly_labels.txt`:
+
+```sh
+mkdir -p data data/openstack
+unzip BGL.zip -d data                                  # -> data/BGL.log
+tar -xzf OpenStack.tar.gz -C data/openstack            # -> data/openstack/openstack_*.log
+```
+
+Then load. **Point `--openstack` at the `data/openstack` subfolder only** (not
+`./data`) so the recursive scan doesn't also pick up `BGL.log`:
 
 ```sh
 # Client-side parse (works anywhere; larger batches for the full corpus):
-python load_logs.py --bgl ./data/BGL.log --openstack ./data/openstack-logs
+python load_logs.py --bgl ./data/BGL.log --openstack ./data/openstack
 
 # OR fast server-side bulk load via read_csv (needs ./data mounted), path as the
 # SERVER sees it:
-python load_logs.py --server-bgl /data/BGL.log --openstack ./data/openstack-logs
+python load_logs.py --server-bgl /data/BGL.log --openstack ./data/openstack
 
 # OPTIONAL hygiene: write a UTF-8-clean copy first (replaces a few stray bytes).
-# Not required for full-text to work (that was a param-binding issue, now fixed
-# in db.py via ClientCursor), but harmless:
+# Not required for full-text to work (that was a param-binding issue, fixed in
+# db.py via ClientCursor), but harmless:
 #   python load_logs.py --clean-bgl ./data/BGL.log
-#   python load_logs.py --server-bgl /data/BGL_clean.log --openstack ./data/openstack-logs
+#   python load_logs.py --server-bgl /data/BGL_clean.log --openstack ./data/openstack
 ```
 
 > The `--server-bgl` path streams the file inside SereneDB and parses fields with
@@ -293,7 +305,7 @@ Presentation: **[`docs/slides.pdf`](docs/slides.pdf)** (the deck). Demo script:
   tools re-check the index per call, so a fresh connection reports the true state.
 - **`openstack_logs ... (QUERY ERROR) ... column error_match does not exist`.**
   OpenStack was loaded under an older schema. Reload it:
-  `python load_logs.py --openstack ./data/openstack-logs`.
+  `python load_logs.py --openstack ./data/openstack`.
 
 ## Configuration
 
