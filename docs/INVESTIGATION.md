@@ -17,7 +17,10 @@ can be re-checked. Data scope and filters are stated on every result.
 `alert_profile` (lines vs. distinct nodes vs. distinct days) and `trend_by_day`.
 The genuinely recurring problems, by days-present, are **KERNRTSP (126 days)**
 and **APPSEV (70 days)**. This "what's loudest ≠ what recurs" distinction is the
-core of the three role answers below.
+core of the three role answers below — and the engineer then drills into
+**KERNRTSP**, finding its most recent panic (2006-01-03) is **likely** triggered
+by an uncorrectable L2 d-cache parity error on one chip that took down a
+multi-rack job (hypothesis — see the engineer section).
 
 ---
 
@@ -33,39 +36,31 @@ deterministic, no-API-key reproduction of the same tool calls.
 **Tools Claude chose:** `search_logs_fulltext` (BGL, "rts panic") →
 `top_nodes_for_alert(category="KERNRTSP")` → `get_nearby_events` (node-scoped).
 
-**What it found (real result):** KERNRTSP is **3,983 lines across 3,394 nodes
-over 126 days** — low volume, very wide, persistent (hence the recurring one).
-About **half the lines are a single mass event on 2005-06-14**; the rest are
-scattered, the most recent on **2006-01-03**. Top node for KERNRTSP overall:
-`R63-M0-NE-C:J12-U01` (22 lines).
+**What it found (real result):** KERNRTSP = **3,983 lines on 3,394 nodes over 126
+days** — low volume, very wide, persistent. Two phases: Jun–mid-Sep 2005
+partition-wide bursts (week of 06-13 = 2,238 lines, incl. **2,048 on 06-14, > half
+of all KERNRTSP**), then a steady ≤24/week trickle to 2006-01-03. Nearly every
+node has only 1–3 panics (whole-fleet, not a few bad chips); outlier node
+`R63-M0-NE-C:J12-U01` (22), rack R27 ≈ 10 of the top 20.
 
-Tracing the most recent occurrence (2006-01-03, node `R27-M0-NA-C:J11-U11`) with
-node-scoped `get_nearby_events` showed a clear sequence after a quiet hour:
+Tracing the most recent occurrence (2006-01-03, `R27-M0-NA-C:J11-U11`) after a
+quiet 02:24–03:24: `03:24:46 KERNMC` *L2 dcache write data parity error* → ~130
+register-dump lines over ~19s → `03:25:05 KERNRTSP rts panic!` → within a second,
+`APPSEV ciod ... Link has been severed` on I/O nodes in racks R20/R22/R24/R25/
+R26/R27, all to front-end `172.16.96.116` (130 APPSEV lines on 130 nodes that
+day). Full verbatim lines in the detailed section below.
 
-| Time | Event | Meaning |
-|------|-------|---------|
-| 03:24:46 | **KERNMC** — L2 d-cache parity machine check | hardware cache error |
-| 03:25:05 | **rts panic** (KERNRTSP) | runtime supervisor panics ~19s later |
-| 03:25:06+ | **APPSEV "link severed"** on I/O nodes, racks **R20–R27** | apps lose their link, all to front-end **172.16.96.116** |
+**Answer (engineering read, HYPOTHESIS not fact):** an uncorrectable L2 d-cache
+parity error is **likely** what killed a large multi-rack job — the
+KERNMC → dump → rts panic → "link severed" chain is **consistent with** that. The
+logs establish the sequence and timing, not causation.
 
-**How it reasoned (from the evidence, not invented):** a cache-parity machine
-check immediately precedes the panic, which is immediately followed by a cluster
-of "link severed" app errors on I/O nodes talking to one front-end address — a
-tight causal-looking chain in ~20 seconds.
+**Honest limitation (Claude's own):** 333 KERNMNTF lines that day were NOT
+time-correlated, so they are not tied to this event.
 
-**Answer (engineering read, HYPOTHESIS not fact):** looks like a **hardware
-fault** — an L2 d-cache parity error the runtime couldn't ride through, panicking
-and cascading link losses. The logs establish the *sequence and timing*, not the
-root cause.
-
-**Next step:** flag `R27-M0-NA-C:J11-U11` and the top node
-`R63-M0-NE-C:J12-U01` for a hardware diagnostic; check whether the 2005-06-14
-mass event shares the KERNMC→panic signature; confirm whether front-end
-172.16.96.116 was reachable at 03:25.
-
-**What the data does NOT establish:** "hardware fault" is a hypothesis consistent
-with the KERNMC→panic→link-severed sequence; the logs cannot confirm the cache
-error *caused* the panic (vs. a shared upstream cause).
+**Next step:** flag `R27-M0-NA-C:J11-U11` and outlier `R63-M0-NE-C:J12-U01` for
+hardware diagnostics; check whether the 2005-06-14 R26-M0-NB burst shares the
+KERNMC→panic signature; confirm whether 172.16.96.116 was reachable at 03:25.
 
 ### Team Lead — "which BGL alert categories recur most, which teams own them, and is the top one rising or steady?"
 
@@ -260,46 +255,92 @@ points at an event (a node/rack incident that day), not an ongoing defect.
 
 ## Engineer — *investigate KERNRTSP, the alert the team lead flagged*
 
-This is the same thread: the team lead / manager prioritised **KERNRTSP** (126
-days, still active) over the loud one-day KERNDTLB burst, and handed it to the
-engineer. The engineer drills into KERNRTSP with the tools (real Claude-over-MCP
-session).
+The team lead / manager prioritised **KERNRTSP** (126 days, still active) over
+the loud one-day KERNDTLB burst, and handed it to the engineer. The engineer
+drills into KERNRTSP (real Claude-over-MCP session; verbatim lines below).
 
-**Tools Claude chose:** `search_logs_fulltext` (BGL, "rts panic") +
-`top_nodes_for_alert(category="KERNRTSP")` + `get_nearby_events` (node-scoped).
+**Question:** "Which nodes and days are affected, show example lines, and what
+happened just before and after the most recent one?"
+**Tools Claude chose:** `trend_by_week` + `alert_profile` /
+`top_nodes_for_alert(category="KERNRTSP")` + `search_logs_fulltext` +
+`get_nearby_events` (node-scoped).
 
-**Scope / spread (from `alert_profile`):** KERNRTSP = **3,983 lines across 3,394
-nodes over 126 days** — low volume, very wide and persistent, which is why it is
-the recurring problem to chase, not a one-off. About **half the lines fall on a
-single mass event, 2005-06-14**; the rest are scattered through the run, the most
-recent on **2006-01-03** (the last day of data).
+**Scope (restated by Claude from the tools):** BGL still 4,747,963 lines;
+KERNRTSP = **3,983 lines on 3,394 nodes over 126 days (2005-06-05 → 2006-01-03)**.
 
-**Most-recent occurrence traced (2006-01-03, node `R27-M0-NA-C:J11-U11`):**
+### Which nodes (observed)
+Nearly every affected node has only **1–3 panics** — this hits the whole fleet,
+not a few bad chips. The exceptions:
 
-| Time | Event | Meaning |
-|------|-------|---------|
-| (quiet hour before) | nothing on the node | baseline |
-| 03:24:46 | **KERNMC** — L2 d-cache parity machine check | a hardware-level cache error |
-| 03:25:05 | **rts panic** (KERNRTSP) | the runtime supervisor panics ~19s later |
-| 03:25:06+ | **APPSEV "link severed"** on I/O nodes in racks **R20–R27** | downstream apps lose their link, all to front-end **172.16.96.116** |
+| Node | Lines |
+|------|------:|
+| **R63-M0-NE-C:J12-U01** | 22 (clear outlier) |
+| R45-M0-N6-C:J07-U11 | 9 |
+| R03-M1-NF-C:J07-U01, R71-M0-N4-C:J14-U01 | 8 each |
+| R07-M0-NE-C:J17-U01, R12-M0-N0-C:J12-U01, R62-M0-N4-C:J13-U01 | 7 each |
 
-**Top node for KERNRTSP overall:** `R63-M0-NE-C:J12-U01` (22 lines).
+Rack **R27** accounts for ~10 of the top-20 nodes, and the most recent panic is
+also in R27.
 
-**Observed sequence:** a cache-parity machine check immediately precedes the rts
-panic, which is immediately followed by a cluster of "link severed" app errors on
-I/O nodes talking to one front-end address.
+### Which days/weeks (observed) — two distinct phases
+- **Jun → mid-Sep 2005: partition-wide bursts.** Week of 2005-06-13 alone =
+  2,238 lines, incl. **2,048 on 06-14 (> half of all KERNRTSP)**. Further bursts:
+  weeks of 09-05 (437), 08-08 (309), 06-27 (216), 08-15 (187), 07-11 (152).
+- **Mid-Sep 2005 → Jan 2006: a steady trickle.** Every week ≤24 lines, typically
+  isolated single-node panics; the last week (2006-01-02) had a single line.
 
-**Hypothesis (NOT a fact):** this looks like a **hardware fault** — an L2 d-cache
-parity error (KERNMC) that the runtime could not ride through, triggering the
-panic and cascading link losses to the front-end. The logs establish the
-*sequence and timing*, not the root cause: we cannot confirm from logs alone
-whether the cache error caused the panic or both share an upstream cause.
+**Observed example — the 2005-06-14 burst** (every node on card R26-M0-NB panicked
+within the same second):
+```
+2005-06-14-11.16.17.058  R26-M0-NB-C:J09-U11  KERNEL FATAL  rts panic! - stopping execution
+2005-06-14-11.16.17.079  R26-M0-NB-C:J15-U11  KERNEL FATAL  rts panic! - stopping execution
+2005-06-14-11.16.17.103  R26-M0-NB-C:J11-U11  KERNEL FATAL  rts panic! - stopping execution
+2005-06-14-11.16.17.174  R26-M0-NB-C:J05-U01  KERNEL FATAL  rts panic! - stopping execution
+```
 
-**Next step:** flag node `R27-M0-NA-C:J11-U11` (and the top node
-`R63-M0-NE-C:J12-U01`) for a hardware diagnostic; check whether the 2005-06-14
-mass event shares the same KERNMC→panic signature or is a different trigger; have
-the I/O-node owners confirm whether front-end 172.16.96.116 was reachable at
-03:25.
+### The most recent one: 2006-01-03 03:25:05 on R27-M0-NA-C:J11-U11
+
+**Before** — the whole cluster logged nothing from 02:24 to 03:24 (no warning).
+Then, on the same node (verbatim):
+```
+03:24:46.844  R27-M0-NA-C:J11-U11  KERNMC  FATAL  machine check interrupt (bit=0x1d): L2 dcache unit write data parity error
+03:24:47.688  ...                         FATAL  data write plb error..............1
+03:24:48.222  ...                         FATAL  d-cache flush parity error........1
+03:24:51.398  ...                         FATAL  problem state (0=sup,1=usr).......1   <- user job was running
+   ... ~130 more lines: registers, FPSCR, fpr0-fpr31 ...
+03:25:05.504  R27-M0-NA-C:J11-U11  KERNRTSP FATAL  rts panic! - stopping execution
+```
+An uncorrectable L2 data-cache parity error hit while a user job was running; the
+kernel spent ~19 seconds dumping its state, then panicked.
+
+**After** — within a second, I/O nodes in racks **R20, R22, R24, R25, R26, R27**
+all lost their links to the same front-end (verbatim):
+```
+03:25:06.083  R25-M0-N4-I:J18-U11  APPSEV FATAL  ciod: Error reading message prefix on CioStream socket to 172.16.96.116:39465, Link has been severed
+03:25:06.377  R22-M1-N0-I:J18-U11  APPSEV FATAL  ciod: ... 172.16.96.116:39425, Link has been severed
+03:25:08.078  R20-M1-N0-I:J18-U11  APPSEV FATAL  ciod: ... 172.16.96.116:39397, Link has been severed
+03:25:09.425  R27-M1-NC-I:J18-U11  APPSEV FATAL  ciod: ... 172.16.96.116:39507, Link has been severed
+```
+That day had **130 APPSEV lines on 130 nodes**.
+
+**Hypothesis (NOT a fact):** one chip's **uncorrectable L2 d-cache parity error
+is likely what killed a large multi-rack job** — the KERNMC → ~19s state dump →
+`rts panic` → cluster of "link severed" APPSEV errors is consistent with that
+chain. The logs establish the sequence and timing, not causation; we cannot
+confirm from logs alone that the cache error *caused* the downstream link losses.
+
+**Honest limitation (Claude's own):** there were also **333 KERNMNTF lines that
+day, but they were not time-correlated** with this event, so they are *not* tied
+to it.
+
+**Observed vs. hypothesis:** the burst phase stopping after September *suggests*
+whatever drove the mass panics was fixed or stopped recurring; what remains is
+background single-node hardware failure. That read is a hypothesis, not confirmed.
+
+**Next step:** flag `R27-M0-NA-C:J11-U11` and the outlier `R63-M0-NE-C:J12-U01`
+for hardware diagnostics; check whether the 2005-06-14 R26-M0-NB burst shares the
+same KERNMC→panic signature or had a different trigger; confirm whether front-end
+172.16.96.116 was reachable at 03:25.
 
 ---
 
