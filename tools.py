@@ -16,7 +16,8 @@ def _total():
     return query(f"SELECT COUNT(*) AS n FROM {TABLE}")[0]["n"]
 
 
-print(f"Connected to SereneDB — {_total()} log entries in '{TABLE}'.")
+print(f"Connected to SereneDB — {_total()} BGL entries in '{TABLE}', "
+      f"{query('SELECT COUNT(*) AS n FROM logs')[0]['n']} entries across all systems in 'logs'.")
 
 
 # ── TOOL 1: Engineer — search logs by keyword ───────────────────────────────
@@ -110,8 +111,111 @@ def risk_summary():
     return summary
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  CROSS-SYSTEM TOOLS — all 16 loghub datasets in the 'logs' table
+# ════════════════════════════════════════════════════════════════════════════
+ALL_TABLE = "logs"
+ALL_COLS = """system, line_id, log_time, level, component, source,
+              content, event_id, event_template, is_problem"""
+
+
+# ── TOOL 7: list systems and their sizes ────────────────────────────────────
+def list_systems():
+    """Return {system: number_of_lines} for every loaded system."""
+    rows = query(f"""SELECT system, COUNT(*) AS n FROM {ALL_TABLE}
+                     GROUP BY system ORDER BY system""")
+    return {r["system"]: r["n"] for r in rows}
+
+
+# ── TOOL 8: Team Lead / Manager — health of every system ───────────────────
+def problems_by_system():
+    """Per system: total lines, problem lines, problem %. Worst first."""
+    rows = query(f"""SELECT system,
+                            COUNT(*)        AS total,
+                            SUM(is_problem) AS problems
+                     FROM {ALL_TABLE}
+                     GROUP BY system""")
+    for r in rows:
+        r["problems"] = int(r["problems"] or 0)
+        r["pct"] = round(r["problems"] / r["total"] * 100, 1) if r["total"] else 0
+    return sorted(rows, key=lambda r: (-r["pct"], r["system"]))
+
+
+# ── TOOL 9: Engineer — search any system ────────────────────────────────────
+def search_all(keyword, system=None, problems_only=False, limit=20):
+    """Keyword search across all systems, or within one system."""
+    sql = f"""SELECT {ALL_COLS} FROM {ALL_TABLE}
+              WHERE (LOWER(content) LIKE %s OR LOWER(component) LIKE %s)"""
+    pattern = f"%{keyword.lower()}%"
+    params = [pattern, pattern]
+    if system:
+        sql += " AND system = %s"
+        params.append(system)
+    if problems_only:
+        sql += " AND is_problem = 1"
+    sql += " ORDER BY system, line_id LIMIT %s"
+    params.append(limit)
+    return query(sql, params)
+
+
+# ── TOOL 10: Team Lead — most frequent event types ──────────────────────────
+def top_events(system, problems_only=False, limit=10):
+    """Most common event templates (message patterns) in one system."""
+    extra = "AND is_problem = 1" if problems_only else ""
+    return query(f"""SELECT event_id, event_template, COUNT(*) AS n
+                     FROM {ALL_TABLE}
+                     WHERE system = %s {extra}
+                     GROUP BY event_id, event_template
+                     ORDER BY n DESC, event_id
+                     LIMIT %s""", (system, limit))
+
+
+# ── TOOL 11: Any role — one-system overview ─────────────────────────────────
+def system_summary(system):
+    """Levels, noisiest components and top problem patterns for one system."""
+    total = query(f"SELECT COUNT(*) AS n FROM {ALL_TABLE} WHERE system = %s",
+                  (system,))[0]["n"]
+    problems = query(f"""SELECT COUNT(*) AS n FROM {ALL_TABLE}
+                         WHERE system = %s AND is_problem = 1""",
+                     (system,))[0]["n"]
+    levels = query(f"""SELECT COALESCE(level, 'n/a') AS level, COUNT(*) AS n
+                       FROM {ALL_TABLE} WHERE system = %s
+                       GROUP BY level ORDER BY n DESC""", (system,))
+    components = query(f"""SELECT component, COUNT(*) AS n FROM {ALL_TABLE}
+                           WHERE system = %s AND is_problem = 1
+                             AND component <> ''
+                           GROUP BY component ORDER BY n DESC, component
+                           LIMIT 5""", (system,))
+    return {
+        "system": system,
+        "total": total,
+        "problems": problems,
+        "pct": round(problems / total * 100, 1) if total else 0,
+        "levels": {r["level"]: r["n"] for r in levels},
+        "problem_components": {r["component"]: r["n"] for r in components},
+        "top_problem_events": top_events(system, problems_only=True, limit=5),
+    }
+
+
 # ── Quick test ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    print("\n=== TOOL 7: Systems loaded ===")
+    print(" ", list_systems())
+
+    print("\n=== TOOL 8: Problems by system ===")
+    for r in problems_by_system():
+        print(f"  {r['system']:<12} {r['problems']:>5}/{r['total']:<5} {r['pct']:>5}%")
+
+    print("\n=== TOOL 9: Search 'failed password' in OpenSSH ===")
+    for r in search_all("failed password", system="OpenSSH", limit=3):
+        print(f"  [{r['system']}] {r['content'][:90]}")
+
+    print("\n=== TOOL 11: Hadoop summary ===")
+    s = system_summary("Hadoop")
+    print(f"  {s['problems']}/{s['total']} problems ({s['pct']}%), levels {s['levels']}")
+    for e in s["top_problem_events"][:3]:
+        print(f"  {e['n']:>4}x  {e['event_template'][:80]}")
+
     print("\n=== TOOL 1: Search for 'error' ===")
     for r in search_logs("error", limit=5):
         print(f"  [{r['severity']}] {r['node']} — {r['message'][:80]}")
