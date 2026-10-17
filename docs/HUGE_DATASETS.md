@@ -57,17 +57,39 @@ FROM otel_idx WHERE Body @@ ts_phrase('timeout') ORDER BY score DESC LIMIT 20;
 All of this is in `otel.py`, isolated so the SereneDB-specific syntax is easy to
 adjust against the live docs.
 
-## Report these for the award (fill in from your run)
+## Measured results
+
+Run on a developer laptop against `part_000.parquet` (one file) over the public
+S3 endpoint — nothing downloaded, SereneDB read it in place.
 
 | Measure | Value |
 |---------|-------|
-| Files queried (of 50) | _e.g. 1_ |
-| Rows queried | _from `otel_aggregate(metric="count")`_ |
-| `COUNT(*)` time | _s_ |
-| Top-services aggregation time | _s_ |
-| Index build time (Body) | _s_ |
-| Full-text query time | _s_ |
-| Did results stay useful at this scale? | _yes/no + note_ |
+| Files queried (of 50) | **1** (`part_000.parquet`) |
+| Rows queried | **1,000,000,000** |
+| `COUNT(*)` time | **0.1 s** (reads Parquet metadata) |
+| Top-services aggregation (`GROUP BY ServiceName`) | **15.5 s** over 1B rows |
+| By-severity aggregation (`GROUP BY SeverityText`) | **11.7 s** over 1B rows |
+| Index build time (`Body`) | _fill from your run (--otel-index)_ |
+| Full-text query time (`Body @@ ts_phrase('timeout')`) | _fill from your run_ |
+| Did results stay useful at this scale? | **Yes** — coherent OTel demo-app data |
+
+**Observed data (1B rows, one file):**
+
+Top services by volume: `cart` 428.6M, `frontend` 292.3M, `email` 88.7M,
+`recommendation` 50.5M, `payment` 37.2M, `shipping` 28.0M, `checkout` 27.1M,
+`quote` 25.9M, `currency` 16.5M, `fraud-detection` 1.6M.
+
+By severity: `info` 676.8M, `information` 140.7M, `error` 122.8M, `trace` 58.3M,
+`warn` 1.26M, `fatal` 9,721.
+
+**Takeaways for the award:**
+- A **1-billion-row** aggregation returns in ~12–16 s with **zero ingestion** —
+  the view reads remote Parquet in place; widening to more files is one line of
+  config, not a loading job.
+- Results remain useful at scale: a manager-style view ("which services and
+  severities dominate") is answerable directly over a billion rows. `error`
+  (122.8M) and `fatal` (9,721) are immediately quantified across the day's first
+  30 minutes of telemetry.
 
 ## Known limitations / caveats
 
