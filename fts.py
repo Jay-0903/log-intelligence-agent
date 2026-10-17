@@ -22,6 +22,14 @@ Key points encoded below:
   * phrase query function is `ts_phrase('...')`
   * ranking is `BM25(<index>.tableoid)`
   * you SELECT ... FROM <index_name>, not the table name
+
+Verified against the official docs (serenedb.com/docs/sql/functions/search):
+  * `(p1 OR p2 ...)` is a valid query, so our OR-of-ts_phrase any-term search is
+    correct. Native refinements (not required): bare-string match
+    `col @@ 'a b c'`, `has_any_tokens(col, list)` / `ts_any(list)`, `::min_match(K)`.
+  * BM25/TFIDF need only the `frequency` flag (we create it); `VACUUM
+    (REFRESH_TABLE)` publishes writes so rows are searchable immediately; the
+    inverted index needs no primary key. See docs/DOCS_VERIFICATION.md.
 """
 from db import execute, query
 

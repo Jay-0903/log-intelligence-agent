@@ -20,8 +20,10 @@ Based on the challenge brief + organiser Q&A:
 OTel record fields: Timestamp, TraceId, SpanId, TraceFlags, SeverityText,
 SeverityNumber, ServiceName, Body (+ *Attributes maps). Body is the text field.
 
-Everything SereneDB-specific is isolated here so it is easy to adjust against
-the live docs. This module is NOT part of the core submission.
+Verified against the docs: CREATE INDEX on a view over read_parquet (local or
+S3) is supported, and the snapshot is refreshed by REINDEX INDEX /
+reindex_interval (serenedb.com/docs/sql/statements/create_index/inverted). This
+matches what this module does. It is NOT part of the core submission.
 
 Run it:
     python load_logs.py --otel-files 1        # just part_000 (~1B rows)

@@ -44,10 +44,11 @@ plus pre-computed summaries — so millions of log lines never have to fit in a 
 
 > **SQL verified against the official docs.** We connected the SereneDB docs MCP
 > server (`serenedb-docs`) and used `search_docs` / `read_section` to confirm the
-> full-text operators, BM25 scoring, inverted-index creation + refresh, remote
-> `read_parquet` syntax and date-bucket functions used here. SereneDB-specific
-> syntax is isolated in `fts.py` (search/index) and `otel.py` (remote data) so it
-> is easy to keep in step with the docs.
+> full-text operators, BM25 scoring, inverted-index creation + refresh (rows are
+> searchable immediately after `VACUUM (REFRESH_TABLE)`; no primary key needed),
+> remote `read_parquet` indexing, and `date_trunc` — all four checks passed. See
+> [`docs/DOCS_VERIFICATION.md`](docs/DOCS_VERIFICATION.md) for the sources and the
+> native any-term refinements noted there.
 
 ---
 
