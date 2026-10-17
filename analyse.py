@@ -1,46 +1,58 @@
-import re
+"""
+Quick offline look at a BGL .log file (no database needed).
+
+Useful for the "hours 0-6, inspect the data" step before loading into
+SereneDB. Field layout matches load_logs.parse_bgl_line:
+
+  alert ts date node time node2 system component severity message...
+
+Usage:
+    python analyse.py                      # defaults to loghub/BGL/BGL_2k.log
+    python analyse.py path/to/BGL.log
+"""
+import os
+import sys
 from collections import Counter
 
-log_file = r"loghub\BGL\BGL_2k.log"
+log_file = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    "loghub", "BGL", "BGL_2k.log")
 
-alerts = []
-severities = []
-components = []
-messages = []
+if not os.path.exists(log_file):
+    raise SystemExit(f"File not found: {log_file}\n"
+                     "Pass a path, e.g. python analyse.py C:\\data\\BGL\\BGL.log")
 
-with open(log_file, "r", encoding="utf-8") as f:
+alerts, severities, components, messages = [], [], [], []
+with open(log_file, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
         parts = line.strip().split()
-        if len(parts) < 9:
+        if len(parts) < 10:
             continue
+        alerts.append(parts[0])        # alert label ('-' = normal)
+        components.append(parts[7])    # component (KERNEL, APP, ...)
+        severities.append(parts[8])    # severity (INFO/FATAL/...)
+        messages.append(" ".join(parts[9:]))
 
-        alert = parts[0]  # - or alert type
-        node = parts[2]  # node ID
-        severity = parts[7]  # INFO, FATAL, WARNING etc
-        message = " ".join(parts[8:])
-        component = parts[5] + " " + parts[6]  # e.g. RAS KERNEL
+print(f"Total parsed log lines: {len(alerts):,}")
+print(f"Normal (alert '-'):     {alerts.count('-'):,}")
+print(f"Labelled alerts:        {len(alerts) - alerts.count('-'):,}")
 
-        alerts.append(alert)
-        severities.append(severity)
-        components.append(component)
-        messages.append(message)
+print("\nAlert categories (top 12):")
+for k, v in Counter(a for a in alerts if a != "-").most_common(12):
+    print(f"  {k:<12} {v}")
 
-print(f"Total log lines: {len(alerts)}")
-print(f"\nAlert types (top 10):")
-for k, v in Counter(alerts).most_common(10):
-    print(f"  {k}: {v}")
-
-print(f"\nSeverity levels:")
+print("\nSeverity levels:")
 for k, v in Counter(severities).most_common():
-    print(f"  {k}: {v}")
+    print(f"  {k:<10} {v}")
 
-print(f"\nTop components:")
+print("\nTop components:")
 for k, v in Counter(components).most_common(10):
-    print(f"  {k}: {v}")
+    print(f"  {k:<12} {v}")
 
-print(f"\nSample FATAL messages:")
-for i, (a, s, m) in enumerate(zip(alerts, severities, messages)):
+print("\nSample FATAL messages:")
+shown = 0
+for s, m in zip(severities, messages):
     if s == "FATAL":
-        print(f"  [{a}] {m[:100]}")
-    if i > 500:
-        break
+        print(f"  {m[:100]}")
+        shown += 1
+        if shown >= 8:
+            break

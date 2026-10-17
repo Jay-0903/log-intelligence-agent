@@ -1,328 +1,231 @@
-import re
+"""
+Log Intelligence Agent — role-aware CLI over the SereneDB tools.
 
-from tools import (
-    search_logs, get_nearby_events, count_by_severity,
-    count_alerts, top_failing_nodes, risk_summary,
-    problems_by_system, search_all, top_events, system_summary,
-)
+Rule-based (no API key needed) so the workflow is reproducible for judges.
+It demonstrates the same thing the MCP server exposes: pick the right tool
+for the role, run a parameterized SereneDB query, then explain the evidence
+and recommend a next step.
 
-# ── Multi-system support ─────────────────────────────────────────────────────
-# Words in a question that point at one of the 16 loghub systems
-SYSTEM_ALIASES = {
-    "android": "Android", "apache": "Apache", "hdfs": "HDFS", "hpc": "HPC",
-    "hadoop": "Hadoop", "healthapp": "HealthApp", "health app": "HealthApp",
-    "linux": "Linux", "mac": "Mac", "macos": "Mac", "openssh": "OpenSSH",
-    "ssh": "OpenSSH", "openstack": "OpenStack", "nova": "OpenStack",
-    "proxifier": "Proxifier", "proxy": "Proxifier", "spark": "Spark",
-    "thunderbird": "Thunderbird", "windows": "Windows",
-    "zookeeper": "Zookeeper", "bgl": "BGL",
-}
-CROSS_SYSTEM = ("all systems", "which system", "every system", "each system",
-                "compare", "across", "overall", "systems")
-STOPWORDS = {"show", "me", "the", "what", "which", "are", "is", "in", "on",
-             "for", "any", "all", "of", "and", "or", "a", "an", "logs", "log",
-             "events", "entries", "there", "happened", "find", "list", "give",
-             "most", "common", "about", "with", "from", "did", "does", "do",
-             "how", "many", "system", "errors?", "should", "we", "top"}
+Each answer:
+  * states the DATA SCOPE and filters,
+  * shows the EVIDENCE (query result),
+  * separates OBSERVED FACTS from HYPOTHESES,
+  * ends with a role-appropriate NEXT STEP.
 
+Roles differ in which evidence they select, not just answer length:
+  Engineer  -> full-text search + nearby events (what/where, drill in)
+  Team lead -> recurring categories + per-team counts + trend (what recurs)
+  Manager   -> prioritized problems by measured frequency + owning team
 
-def detect_system(question):
-    q = question.lower()
-    for alias in sorted(SYSTEM_ALIASES, key=len, reverse=True):
-        if re.search(rf"\b{re.escape(alias)}\b", q):
-            return SYSTEM_ALIASES[alias]
-    return None
+Usage:
+    python agent.py                      # scripted demo + interactive loop
+    python agent.py "engineer: ..."      # one-shot
+"""
+import sys
+
+import tools
 
 
-def _keywords(question, system):
-    aliases = {a for a, s in SYSTEM_ALIASES.items() if s == system}
-    words = [w for w in re.findall(r"[a-z0-9_.-]+", question.lower())
-             if len(w) > 2 and w not in STOPWORDS and w not in aliases]
-    phrases = [" ".join(words[i:i + 2]) for i in range(len(words) - 1)]
-    return phrases + words
-
-
-def answer_multi(role, question):
-    """Answer questions about the 16 loghub systems.
-    Returns None when the question is about BGL only (handled below)."""
-    q = question.lower()
-    system = detect_system(question)
+def _fmt_rows(rows, cols, widths):
     out = []
+    for r in rows:
+        cells = []
+        for c, w in zip(cols, widths):
+            v = r.get(c)
+            v = "" if v is None else str(v)
+            cells.append(v[:w].ljust(w))
+        out.append("  " + "  ".join(cells))
+    return out
 
-    # ── Questions comparing systems ──
-    if system is None and any(w in q for w in CROSS_SYSTEM):
-        rows = problems_by_system()
-        out.append("System health across all loghub datasets (worst first):")
-        for r in rows:
-            bar = "█" * int(r["pct"] // 2)
-            out.append(f"  {r['system']:<12} {r['problems']:>5}/{r['total']:<5}"
-                       f" {r['pct']:>5}%  {bar}")
-        if role == "manager":
-            worst = [r["system"] for r in rows[:3]]
-            out.append("")
-            out.append(f"✅ RECOMMENDATION: focus first on {', '.join(worst)} — "
-                       "they have the highest share of problem events.")
+
+def _provenance(env):
+    t = " (TRUNCATED — more rows exist)" if env["truncated"] else ""
+    return (f"  [scope: {env['scope']} | rows: {env['count']}{t}]\n"
+            f"  [query: {env['query']}]")
+
+
+# ===========================================================================
+#  ENGINEER
+# ===========================================================================
+def answer_engineer(question):
+    """What failed, where, and what happened just before/after."""
+    q = question.lower()
+    dataset = "openstack" if any(w in q for w in
+              ("openstack", "nova", "api", "compute", "scheduler", "tenant")) else "bgl"
+    # Strip role words to form the search phrase.
+    phrase = question
+    for lead in ("engineer:",):
+        if phrase.lower().startswith(lead):
+            phrase = phrase[len(lead):]
+    phrase = phrase.strip() or "error"
+
+    out = ["ENGINEER — error investigation", ""]
+    if dataset == "openstack":
+        env = tools.search_openstack_fulltext(phrase, limit=8)
+        out.append(f"OBSERVED — top OpenStack matches for '{phrase}':")
+        out += _fmt_rows(env["rows"],
+                         ["level", "component", "message"], [6, 14, 80])
+        out.append(_provenance(env))
+        out += ["", "HYPOTHESIS — the highest-scoring lines point at the component above.",
+                "NEXT STEP — pull the request_id from a hit and grep nearby lines for "
+                "the same request to see the full request lifecycle."]
         return "\n".join(out)
 
-    if system is None or system == "BGL":
-        return None  # fall through to the detailed BGL answers
+    # BGL: full-text search, then nearby events around the top hit.
+    env = tools.search_bgl_fulltext(phrase, limit=8)
+    rows = env["rows"]
+    out.append(f"OBSERVED — top BGL matches for '{phrase}' (BM25 ranked):")
+    out += _fmt_rows(rows, ["severity", "node", "component", "message"],
+                     [7, 20, 10, 70])
+    out.append(_provenance(env))
 
-    # ── Questions about one system ──
-    if role == "engineer":
-        hits, used = [], None
-        for kw in _keywords(question, system):
-            hits = search_all(kw, system=system, limit=8)
-            if hits:
-                used = kw
-                break
-        if not hits:
-            hits = search_all("", system=system, problems_only=True, limit=8)
-            used = "problem events"
-        out.append(f"{system} — entries matching '{used}' ({len(hits)} shown):")
-        for h in hits:
-            flag = "⚠️ " if h["is_problem"] else "   "
-            out.append(f"  {flag}[{h['level'] or '-'}] {h['log_time']} "
-                       f"{h['component']} — {h['content'][:90]}")
-        return "\n".join(out)
+    if rows and rows[0].get("ts"):
+        ts = rows[0]["ts"]
+        near = tools.get_nearby_events_bgl(ts, window_seconds=60, limit=8)
+        out += ["", f"OBSERVED — context +/-60s around the top hit (ts={ts}):"]
+        out += _fmt_rows(near["rows"], ["alert", "severity", "node", "message"],
+                         [10, 7, 18, 64])
+        out.append(_provenance(near))
 
-    s = system_summary(system)
-    out.append(f"{system}: {s['problems']} problem events out of {s['total']} "
-               f"({s['pct']}%)")
-
-    if role in ("teamlead", "team lead"):
-        out.append(f"  Levels: {s['levels']}")
-        out.append("\n  Most common event patterns:")
-        for e in top_events(system, limit=8):
-            out.append(f"    {e['n']:>4}x  {e['event_template'][:85]}")
-        if s["problem_components"]:
-            out.append("\n  Components producing problems:")
-            for c, n in s["problem_components"].items():
-                out.append(f"    {c}: {n}")
-        return "\n".join(out)
-
-    # manager
-    out.append("")
-    out.append("🔴 TOP PROBLEM PATTERNS:")
-    for e in s["top_problem_events"]:
-        out.append(f"  • {e['n']}x  {e['event_template'][:85]}")
-    out.append("")
-    if s["pct"] > 10:
-        out.append(f"⚠️  {s['pct']}% of {system} events are problems — needs attention.")
-    elif s["problems"]:
-        out.append(f"🟡 {s['pct']}% problem rate — monitor, not urgent.")
-    else:
-        out.append("🟢 No problem events detected.")
-    if s["problem_components"]:
-        worst = next(iter(s["problem_components"]))
-        out.append(f"📍 Start with component '{worst}' — the main source of problems.")
+    top = rows[0] if rows else None
+    comp = top.get("component") if top else "?"
+    out += ["",
+            f"HYPOTHESIS — failure centres on component '{comp}' on the node above; "
+            "the nearby window shows what co-occurred. The logs show the symptom, "
+            "not a confirmed root cause.",
+            f"NEXT STEP — check the owning team's runbook for '{comp}' and widen the "
+            "window (get_nearby_events, larger window_seconds) to see if the alert "
+            "repeats on the same node."]
     return "\n".join(out)
 
 
-# ── Simple rule-based agent (no API key needed) ──────────────────────────────
-# Answers questions for 3 roles: Engineer, Team Lead, Manager
-
-def answer_engineer(question):
-    """Engineer wants: what happened, where, show me nearby events."""
-    multi = answer_multi("engineer", question)
-    if multi:
-        return multi
-
-    q = question.lower()
-    results = []
-
-    if any(word in q for word in ["error", "fail", "fault", "crash", "parity"]):
-        keyword = next((w for w in ["error", "fail", "fault", "crash", "parity"] if w in q), "error")
-        hits = search_logs(keyword, limit=10)
-        if hits:
-            results.append(f"Found {len(hits)} log entries matching '{keyword}':\n")
-            for h in hits[:5]:
-                results.append(f"  [{h['severity']}] {h['datetime']} | Node: {h['node']} | {h['message'][:100]}")
-                # Show nearby events for first hit
-            results.append(f"\nContext window (±5 min) around first match:")
-            nearby = get_nearby_events(hits[0]["timestamp"], window_seconds=300, limit=5)
-            for n in nearby:
-                marker = ">>>" if n["node"] == hits[0]["node"] else "   "
-                results.append(f"  {marker} [{n['alert']}] {n['datetime']} {n['node']} — {n['message'][:80]}")
-        else:
-            results.append(f"No entries found for '{keyword}'.")
-
-    elif "node" in q or "rack" in q:
-        # Extract node ID if mentioned
-        words = question.split()
-        node_id = next((w for w in words if "R" in w and "-" in w), None)
-        if node_id:
-            hits = search_logs(node_id, limit=10)
-            results.append(f"Events for node {node_id}:")
-            for h in hits[:10]:
-                results.append(f"  [{h['alert']}] [{h['severity']}] {h['message'][:100]}")
-        else:
-            top = top_failing_nodes(5)
-            results.append("Top failing nodes:")
-            for node, count in top.items():
-                results.append(f"  {node}: {count} alerts")
-
-    elif "kernel" in q or "tlb" in q or "memory" in q:
-        hits = search_logs("KERNDTLB", limit=10) + search_logs("kernel", limit=5)
-        results.append(f"Kernel-related events ({len(hits)} found):")
-        for h in hits[:8]:
-            results.append(f"  [{h['alert']}] {h['node']} — {h['message'][:100]}")
-
-    else:
-        # Generic: search by any keyword in question
-        for word in question.split():
-            if len(word) > 4:
-                hits = search_logs(word, limit=5)
-                if hits:
-                    results.append(f"Events matching '{word}':")
-                    for h in hits[:3]:
-                        results.append(f"  [{h['severity']}] {h['node']} — {h['message'][:80]}")
-                    break
-        if not results:
-            results.append("Try asking about: errors, a specific node ID, kernel issues, or component failures.")
-
-    return "\n".join(results)
-
-
+# ===========================================================================
+#  TEAM LEAD
+# ===========================================================================
 def answer_team_lead(question):
-    """Team Lead wants: patterns, counts, trends, recurring issues."""
-    multi = answer_multi("teamlead", question)
-    if multi:
-        return multi
+    """Which problems recur, how often, and which teams own them."""
+    out = ["TEAM LEAD — recurring patterns & ownership", ""]
 
-    q = question.lower()
-    results = []
+    cats = tools.count_bgl_alert_categories(limit=8)
+    out.append("OBSERVED — BGL alert categories, whole corpus (most frequent first):")
+    out += _fmt_rows(cats["rows"], ["category", "n"], [16, 10])
+    out.append(_provenance(cats))
 
-    if "severity" in q or "level" in q or "how many" in q:
-        counts = count_by_severity()
-        results.append("Event counts by severity level:")
-        for sev, count in counts.items():
-            bar = "█" * (count // 50)
-            results.append(f"  {sev:<12} {count:>5}  {bar}")
+    teams = tools.count_bgl_alerts_by_team(limit=8)
+    out += ["", "OBSERVED — BGL events by owning team / component (alerts first):"]
+    out += _fmt_rows(teams["rows"], ["team", "component", "alert_events", "events"],
+                     [20, 12, 12, 10])
+    out.append(_provenance(teams))
 
-    if "alert" in q or "type" in q or "pattern" in q or "recurring" in q:
-        counts = count_alerts()
-        counts.pop("-", None)
-        results.append("\nRecurring alert patterns:")
-        for alert, count in counts.items():
-            results.append(f"  {alert:<15} {count:>5} occurrences")
+    osc = tools.count_openstack_by_component()
+    out += ["", "OBSERVED — OpenStack problem rate by nova service, whole corpus:"]
+    out += _fmt_rows(osc["rows"],
+                     ["component", "team", "total", "problems", "problem_pct"],
+                     [16, 14, 8, 9, 11])
+    out.append(_provenance(osc))
 
-    if "node" in q or "component" in q or "which" in q:
-        top = top_failing_nodes(10)
-        results.append("\nTop failing nodes (most alerts):")
-        for node, count in top.items():
-            results.append(f"  {node}: {count}")
-
-    if not results:
-        # Default: give full pattern overview
-        counts = count_by_severity()
-        alerts = count_alerts()
-        alerts.pop("-", None)
-        results.append("System health overview:")
-        results.append(f"  Total events: 2000")
-        results.append(f"  Severity breakdown: {dict(list(counts.items())[:3])}")
-        results.append(f"  Top alert types: {dict(list(alerts.items())[:3])}")
-        results.append(f"  Recommendation: Monitor KERNDTLB (60 occurrences) — highest alert count.")
-
-    return "\n".join(results)
+    top_cat = cats["rows"][0]["category"] if cats["rows"] else "the top category"
+    top_team = teams["rows"][0]["team"] if teams["rows"] else "the top team"
+    out += ["",
+            f"HYPOTHESIS — '{top_cat}' is the dominant recurring BGL alert; it maps to "
+            f"the '{top_team}' team.",
+            f"NEXT STEP — ask {top_team} to review '{top_cat}' first; use trend_by_day "
+            f"on that category to confirm whether it is rising or steady before "
+            "committing effort."]
+    return "\n".join(out)
 
 
+# ===========================================================================
+#  MANAGER
+# ===========================================================================
 def answer_manager(question):
-    """Manager wants: risks, priorities, what to do."""
-    multi = answer_multi("manager", question)
-    if multi:
-        return multi
+    """What deserves attention first and why — measured frequency only."""
+    out = ["MANAGER — prioritized risks (measured frequency only)", ""]
 
-    summary = risk_summary()
-    results = []
+    cats = tools.count_bgl_alert_categories(limit=5)
+    scope = tools.corpus_scope()
+    out.append(f"DATA SCOPE — BGL: {scope.get('BGL')} lines; "
+               f"OpenStack: {scope.get('OpenStack')} lines (whole corpus).")
+    out += ["", "OBSERVED — most frequent BGL alert categories:"]
+    out += _fmt_rows(cats["rows"], ["category", "n"], [16, 10])
+    out.append(_provenance(cats))
 
-    results.append("📊 EXECUTIVE RISK SUMMARY")
-    results.append(f"  Total log events analyzed: {summary['total_events']:,}")
-    results.append(f"  Anomalies detected: {summary['anomaly_count']} ({summary['anomaly_percent']}%)")
-    results.append("")
-    results.append("🔴 TOP RISKS:")
-    alert_types = summary['top_alert_types']
-    risk_map = {
-        "KERNDTLB": "Kernel TLB errors — memory translation failures, risk of data corruption",
-        "KERNSTOR": "Kernel store errors — storage subsystem faults",
-        "APPSEV":   "Application severe errors — service disruption possible",
-        "KERNMNTF": "Kernel mount failures — filesystem access issues",
-        "KERNTERM": "Kernel terminations — nodes crashing, hardware may need replacement",
-    }
-    for alert, count in list(alert_types.items())[:5]:
-        desc = risk_map.get(alert, "System alert")
-        results.append(f"  • {alert} ({count}x): {desc}")
+    osc = tools.count_openstack_by_component()
+    out += ["", "OBSERVED — OpenStack services ranked by problem count:"]
+    out += _fmt_rows(osc["rows"],
+                     ["component", "team", "problems", "problem_pct"],
+                     [16, 14, 9, 11])
+    out.append(_provenance(osc))
 
-    results.append("")
-    results.append("📍 NODES REQUIRING IMMEDIATE ATTENTION:")
-    for node, count in list(summary['top_risk_nodes'].items())[:3]:
-        results.append(f"  • {node} — {count} incidents")
+    out += ["", "PRIORITIZED ACTIONS (by measured frequency, highest first):"]
+    rank = 1
+    for row in cats["rows"][:3]:
+        teams = tools.count_bgl_alerts_by_team(limit=50)["rows"]
+        team = next((t["team"] for t in teams
+                     if t.get("alert_events")), "the owning team")
+        out.append(f"  {rank}. BGL '{row['category']}' — {row['n']} events. "
+                   f"Route to {team}.")
+        rank += 1
+    for row in osc["rows"][:2]:
+        if row.get("problems"):
+            out.append(f"  {rank}. OpenStack {row['component']} — {row['problems']} "
+                       f"problem lines ({row['problem_pct']}%). Owner: {row['team']}.")
+            rank += 1
 
-    results.append("")
-    results.append("✅ RECOMMENDED ACTIONS:")
-    for action in summary['recommended_actions']:
-        results.append(f"  {action}")
+    out += ["",
+            "NOTE — these are counts of matching log lines, not confirmed incidents, "
+            "and the logs do not establish financial loss, downtime or customer "
+            "impact. Priority here means measured frequency and clear ownership."]
+    return "\n".join(out)
 
-    return "\n".join(results)
+
+# ===========================================================================
+#  routing + CLI
+# ===========================================================================
+def dispatch(role, question):
+    role = role.lower()
+    if "engineer" in role:
+        return answer_engineer(question)
+    if "team" in role or "lead" in role:
+        return answer_team_lead(question)
+    if "manager" in role:
+        return answer_manager(question)
+    return "Unknown role. Use: engineer / teamlead / manager"
 
 
-# ── Interactive demo ─────────────────────────────────────────────────────────
+DEMO = [
+    ("ENGINEER",  "engineer: kernel instruction cache parity error"),
+    ("TEAM LEAD", "teamlead: what alert patterns recur and which teams own them?"),
+    ("MANAGER",   "manager: what should we prioritize?"),
+]
+
+
 def run_demo():
-    print("=" * 60)
-    print("LOG INTELLIGENCE AGENT — Demo")
-    print("=" * 60)
-
-    demo_questions = [
-        ("ENGINEER",  "Show me instruction cache parity errors and what happened nearby"),
-        ("TEAM LEAD", "What are the recurring alert patterns and severity levels?"),
-        ("MANAGER",   "What are the top risks and what should we do?"),
-        ("ENGINEER",  "Show me failed password attempts in ssh"),
-        ("TEAM LEAD", "What are the most common events in Hadoop?"),
-        ("MANAGER",   "Which systems should we worry about across all systems?"),
-    ]
-
-    for role, question in demo_questions:
-        print(f"\n{'─'*60}")
-        print(f"ROLE: {role}")
-        print(f"QUESTION: {question}")
-        print(f"{'─'*60}")
-
-        if role == "ENGINEER":
-            answer = answer_engineer(question)
-        elif role == "TEAM LEAD":
-            answer = answer_team_lead(question)
-        else:
-            answer = answer_manager(question)
-
-        print(answer)
-
-    print(f"\n{'='*60}")
-    print("INTERACTIVE MODE — type your question (or 'quit')")
-    print("Start with: engineer / teamlead / manager")
-    print("Example: engineer: show errors on node R30")
-    print("         teamlead: what happens most in zookeeper?")
-    print("         manager: compare all systems")
-    print("=" * 60)
-
+    print("=" * 70)
+    print("LOG INTELLIGENCE AGENT — SereneDB (BGL + OpenStack base corpus)")
+    print("=" * 70)
+    for role, q in DEMO:
+        print(f"\n{'-'*70}\nROLE: {role}\nQUESTION: {q}\n{'-'*70}")
+        print(dispatch(role, q))
+    print(f"\n{'='*70}\nINTERACTIVE — 'role: question'  (engineer/teamlead/manager), "
+          "or 'quit'\n{'='*70}".replace("{'='*70}", "=" * 70))
     while True:
-        user_input = input("\n> ").strip()
-        if user_input.lower() in ("quit", "exit", "q"):
+        try:
+            line = input("\n> ").strip()
+        except EOFError:
             break
-        if ":" in user_input:
-            role_part, question = user_input.split(":", 1)
-            role_part = role_part.strip().lower()
-            question = question.strip()
-            if "engineer" in role_part:
-                print(answer_engineer(question))
-            elif "team" in role_part or "lead" in role_part:
-                print(answer_team_lead(question))
-            elif "manager" in role_part:
-                print(answer_manager(question))
-            else:
-                print("Unknown role. Use: engineer / teamlead / manager")
+        if line.lower() in ("quit", "exit", "q"):
+            break
+        if ":" in line:
+            role, q = line.split(":", 1)
+            print(dispatch(role.strip(), q.strip()))
         else:
-            print("Format: role: your question")
-            print("Example: manager: what are the biggest risks?")
+            print("Format: role: your question (e.g. 'manager: top risks?')")
 
 
 if __name__ == "__main__":
-    run_demo()
+    if len(sys.argv) > 1 and ":" in sys.argv[1]:
+        role, q = sys.argv[1].split(":", 1)
+        print(dispatch(role.strip(), q.strip()))
+    else:
+        run_demo()
