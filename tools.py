@@ -373,6 +373,23 @@ def _missing_table_env(tool, table):
     }
 
 
+def _query_error_env(tool, table, err):
+    """Returned when the table EXISTS but the query failed (e.g. a schema
+    mismatch after a column rename). Distinct from 'not loaded' so the agent
+    isn't told the table is missing when it is really a query error."""
+    hint = ""
+    if "error_match" in str(err) or "column" in str(err).lower():
+        hint = (" The table may be from an older schema — reload it: "
+                "python load_logs.py --openstack ./data/OpenStack (the "
+                "is_problem column was renamed to error_match).")
+    return {
+        "tool": tool, "scope": f"{table} (QUERY ERROR)", "filters": {},
+        "query": None, "rows": [], "count": 0, "truncated": False,
+        "limit": None,
+        "note": f"Query against '{table}' failed: {str(err).splitlines()[0]}.{hint}",
+    }
+
+
 def count_openstack_by_component(start=None, end=None):
     """TOOL (team lead/manager): OpenStack counts grouped by nova service, with
     the owning team, avg latency, and an ERROR-KEYWORD rate.
@@ -403,8 +420,8 @@ def count_openstack_by_component(start=None, end=None):
     """
     try:
         rows = query(sql, tp or None)
-    except Exception:
-        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
+    except Exception as e:
+        return _query_error_env("count_openstack_by_component", OPENSTACK_TABLE, e)
     return _envelope("count_openstack_by_component",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
                      {"group_by": "component (nova service)",
@@ -465,8 +482,8 @@ def openstack_request_trace(request_id, limit=50):
            f'WHERE request_id = %s ORDER BY ts, id LIMIT %s')
     try:
         rows = query(sql, (request_id, limit))
-    except Exception:
-        return _missing_table_env("openstack_request_trace", OPENSTACK_TABLE)
+    except Exception as e:
+        return _query_error_env("openstack_request_trace", OPENSTACK_TABLE, e)
     return _envelope("openstack_request_trace",
                      f"OpenStack ({_count(OPENSTACK_TABLE):,} lines)",
                      {"request_id": request_id}, sql, rows, limit)
