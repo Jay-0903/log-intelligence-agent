@@ -336,9 +336,8 @@ def bgl_trend_by_week(category=None, limit=60, start=None, end=None):
     category, limit, start/end (default = whole corpus). Output: week_start,
     alert_events per week.
 
-    NOTE: date_trunc('week', ...) is the DuckDB-style function; verify the exact
-    name against the SereneDB docs (search_docs 'date_trunc week'). Isolated here
-    so it is a one-line change if the docs differ (e.g. time_bucket)."""
+    Uses date_trunc('week', to_timestamp(ts)) — confirmed against the SereneDB
+    docs (sql/functions/timestamp; alias datetrunc, time_bucket also available)."""
     where = "ts > 0"
     params = []
     if category:
