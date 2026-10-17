@@ -1,243 +1,488 @@
 """
-Log tools backed by SereneDB.
+Log tools backed by SereneDB — the functions the agent calls.
 
-Same function names and return shapes as the original file-based version,
-so agent.py works unchanged. Load the data first with:  python load_logs.py
+Design principles (from the challenge brief):
+  * Search returns a LIMITED set of relevant lines; aggregation returns
+    CALCULATED counts/trends over the whole stated scope.
+  * Every result carries its provenance: the SQL query, the filters applied,
+    the data scope, the row count, and whether it was truncated. This lets a
+    reviewer check that every number came from a query that actually ran.
+  * Full-text search uses SereneDB's BM25 inverted index (see fts.py), not
+    substring LIKE.
+
+Return envelope used by all tools:
+  {
+    "tool":      str,
+    "scope":     str,     # which table/dataset + how many rows it covers
+    "filters":   dict,    # the parameters applied
+    "query":     str,     # the SQL that ran (for checking)
+    "rows":      list,    # the result rows
+    "count":     int,     # len(rows)
+    "truncated": bool,    # True if a LIMIT may have cut results
+    "limit":     int|None,
+  }
+
+Load the data first with:  python load_logs.py ...
 """
-from db import TABLE, query
+import re
 
-# Columns returned for every log entry, aliased to the keys agent.py expects
-LOG_COLS = """alert, ts AS "timestamp", log_date AS "date", node,
-              event_time AS "datetime", node2, system, component,
-              severity, message, raw"""
+from db import TABLE, query, scalar
+import fts
 
-
-def _total():
-    return query(f"SELECT COUNT(*) AS n FROM {TABLE}")[0]["n"]
-
-
-print(f"Connected to SereneDB — {_total()} BGL entries in '{TABLE}', "
-      f"{query('SELECT COUNT(*) AS n FROM logs')[0]['n']} entries across all systems in 'logs'.")
-
-
-# ── TOOL 1: Engineer — search logs by keyword ───────────────────────────────
-def search_logs(keyword, limit=20):
-    """Find log lines whose message, node or alert contains a keyword."""
-    pattern = f"%{keyword.lower()}%"
-    return query(
-        f"""SELECT {LOG_COLS} FROM {TABLE}
-            WHERE LOWER(message) LIKE %s
-               OR LOWER(node)    LIKE %s
-               OR LOWER(alert)   LIKE %s
-            ORDER BY id
-            LIMIT %s""",
-        (pattern, pattern, pattern, limit),
-    )
-
-
-# ── TOOL 2: Engineer — get nearby events around a timestamp ─────────────────
-def get_nearby_events(timestamp, window_seconds=300, limit=20):
-    """Get log events within ±window_seconds of a given Unix timestamp."""
-    return query(
-        f"""SELECT {LOG_COLS} FROM {TABLE}
-            WHERE ts > 0 AND ts BETWEEN %s AND %s
-            ORDER BY ts, id
-            LIMIT %s""",
-        (timestamp - window_seconds, timestamp + window_seconds, limit),
-    )
-
-
-# ── TOOL 3: Team Lead — count by severity ───────────────────────────────────
-def count_by_severity():
-    """Count log entries grouped by severity level."""
-    rows = query(f"""SELECT severity, COUNT(*) AS n FROM {TABLE}
-                     GROUP BY severity ORDER BY n DESC""")
-    return {r["severity"]: r["n"] for r in rows}
-
-
-# ── TOOL 4: Team Lead — count alerts by type ────────────────────────────────
-def count_alerts():
-    """Count alert types ('-' = normal; everything else is an incident)."""
-    rows = query(f"""SELECT alert, COUNT(*) AS n FROM {TABLE}
-                     GROUP BY alert ORDER BY n DESC""")
-    return {r["alert"]: r["n"] for r in rows}
-
-
-# ── TOOL 5: Team Lead — top failing nodes ───────────────────────────────────
-def top_failing_nodes(limit=10):
-    """Return nodes with the most non-normal alert entries."""
-    rows = query(f"""SELECT node, COUNT(*) AS n FROM {TABLE}
-                     WHERE alert <> '-'
-                     GROUP BY node ORDER BY n DESC, node
-                     LIMIT %s""", (limit,))
-    return {r["node"]: r["n"] for r in rows}
-
-
-# ── TOOL 6: Manager — risk summary ──────────────────────────────────────────
-def risk_summary():
-    """Total events, % anomalies, top risk nodes, recommended actions."""
-    total = _total()
-    anomaly_count = query(
-        f"SELECT COUNT(*) AS n FROM {TABLE} WHERE alert <> '-'")[0]["n"]
-    pct = round(anomaly_count / total * 100, 1) if total else 0
-
-    top_nodes = top_failing_nodes(5)
-    alert_types = count_alerts()
-    alert_types.pop("-", None)
-
-    summary = {
-        "total_events": total,
-        "anomaly_count": anomaly_count,
-        "anomaly_percent": pct,
-        "top_alert_types": alert_types,
-        "top_risk_nodes": top_nodes,
-        "recommended_actions": [],
-    }
-
-    if pct > 5:
-        summary["recommended_actions"].append(
-            f"⚠️  {pct}% of events are anomalies — investigate immediately.")
-    if "KERNDTLB" in alert_types:
-        summary["recommended_actions"].append(
-            "🔴 KERNDTLB alerts detected — kernel TLB errors, possible memory fault.")
-    if "KERNTERM" in alert_types:
-        summary["recommended_actions"].append(
-            "🔴 KERNTERM alerts — kernel terminations, node may need replacement.")
-    if top_nodes:
-        worst = next(iter(top_nodes))
-        summary["recommended_actions"].append(
-            f"📍 Node {worst} has the most failures — prioritize inspection.")
-
-    return summary
-
-
-# ════════════════════════════════════════════════════════════════════════════
-#  CROSS-SYSTEM TOOLS — all 16 loghub datasets in the 'logs' table
-# ════════════════════════════════════════════════════════════════════════════
+OPENSTACK_TABLE = "openstack_logs"
+OWNERS_TABLE = "component_owners"
 ALL_TABLE = "logs"
-ALL_COLS = """system, line_id, log_time, level, component, source,
-              content, event_id, event_template, is_problem"""
+
+BGL_IDX = "bgl_idx"
+OPENSTACK_IDX = "openstack_idx"
 
 
-# ── TOOL 7: list systems and their sizes ────────────────────────────────────
-def list_systems():
-    """Return {system: number_of_lines} for every loaded system."""
-    rows = query(f"""SELECT system, COUNT(*) AS n FROM {ALL_TABLE}
-                     GROUP BY system ORDER BY system""")
-    return {r["system"]: r["n"] for r in rows}
-
-
-# ── TOOL 8: Team Lead / Manager — health of every system ───────────────────
-def problems_by_system():
-    """Per system: total lines, problem lines, problem %. Worst first."""
-    rows = query(f"""SELECT system,
-                            COUNT(*)        AS total,
-                            SUM(is_problem) AS problems
-                     FROM {ALL_TABLE}
-                     GROUP BY system""")
-    for r in rows:
-        r["problems"] = int(r["problems"] or 0)
-        r["pct"] = round(r["problems"] / r["total"] * 100, 1) if r["total"] else 0
-    return sorted(rows, key=lambda r: (-r["pct"], r["system"]))
-
-
-# ── TOOL 9: Engineer — search any system ────────────────────────────────────
-def search_all(keyword, system=None, problems_only=False, limit=20):
-    """Keyword search across all systems, or within one system."""
-    sql = f"""SELECT {ALL_COLS} FROM {ALL_TABLE}
-              WHERE (LOWER(content) LIKE %s OR LOWER(component) LIKE %s)"""
-    pattern = f"%{keyword.lower()}%"
-    params = [pattern, pattern]
-    if system:
-        sql += " AND system = %s"
-        params.append(system)
-    if problems_only:
-        sql += " AND is_problem = 1"
-    sql += " ORDER BY system, line_id LIMIT %s"
-    params.append(limit)
-    return query(sql, params)
-
-
-# ── TOOL 10: Team Lead — most frequent event types ──────────────────────────
-def top_events(system, problems_only=False, limit=10):
-    """Most common event templates (message patterns) in one system."""
-    extra = "AND is_problem = 1" if problems_only else ""
-    return query(f"""SELECT event_id, event_template, COUNT(*) AS n
-                     FROM {ALL_TABLE}
-                     WHERE system = %s {extra}
-                     GROUP BY event_id, event_template
-                     ORDER BY n DESC, event_id
-                     LIMIT %s""", (system, limit))
-
-
-# ── TOOL 11: Any role — one-system overview ─────────────────────────────────
-def system_summary(system):
-    """Levels, noisiest components and top problem patterns for one system."""
-    total = query(f"SELECT COUNT(*) AS n FROM {ALL_TABLE} WHERE system = %s",
-                  (system,))[0]["n"]
-    problems = query(f"""SELECT COUNT(*) AS n FROM {ALL_TABLE}
-                         WHERE system = %s AND is_problem = 1""",
-                     (system,))[0]["n"]
-    levels = query(f"""SELECT COALESCE(level, 'n/a') AS level, COUNT(*) AS n
-                       FROM {ALL_TABLE} WHERE system = %s
-                       GROUP BY level ORDER BY n DESC""", (system,))
-    components = query(f"""SELECT component, COUNT(*) AS n FROM {ALL_TABLE}
-                           WHERE system = %s AND is_problem = 1
-                             AND component <> ''
-                           GROUP BY component ORDER BY n DESC, component
-                           LIMIT 5""", (system,))
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+def _envelope(tool, scope, filters, sql, rows, limit):
     return {
-        "system": system,
-        "total": total,
-        "problems": problems,
-        "pct": round(problems / total * 100, 1) if total else 0,
-        "levels": {r["level"]: r["n"] for r in levels},
-        "problem_components": {r["component"]: r["n"] for r in components},
-        "top_problem_events": top_events(system, problems_only=True, limit=5),
+        "tool": tool,
+        "scope": scope,
+        "filters": filters,
+        "query": " ".join(sql.split()),
+        "rows": rows,
+        "count": len(rows),
+        "truncated": limit is not None and len(rows) >= limit,
+        "limit": limit,
     }
 
 
-# ── Quick test ───────────────────────────────────────────────────────────────
+def _count(table, where="", params=None):
+    sql = f"SELECT COUNT(*) AS n FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    return int(scalar(sql, params) or 0)
+
+
+def _to_epoch(value):
+    """Accept a unix ts (int/str digits) or a date/datetime string and return
+    unix seconds. Returns None if value is falsy or unparseable."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    import datetime as _dt
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = _dt.datetime.strptime(s, fmt)
+            return int(dt.replace(tzinfo=_dt.timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def _time_clause(col, start, end):
+    """Build an SQL time-range predicate on a unix-seconds column.
+
+    Returns (sql_fragment, params, period_text). The fragment is always
+    prefixed with ' AND ' when non-empty. period_text describes the window for
+    the scope string ('whole corpus' when no bounds given)."""
+    s, e = _to_epoch(start), _to_epoch(end)
+    frags, params, desc = [], [], []
+    if s is not None:
+        frags.append(f"{col} >= %s")
+        params.append(s)
+        desc.append(f"from {s}")
+    if e is not None:
+        frags.append(f"{col} <= %s")
+        params.append(e)
+        desc.append(f"to {e}")
+    sql = (" AND " + " AND ".join(frags)) if frags else ""
+    period = " ".join(desc) if desc else "whole corpus (no time filter)"
+    return sql, params, period
+
+
+def corpus_scope():
+    """How big is each table right now? Used to state data scope in answers."""
+    out = {}
+    for name, tbl in (("BGL", TABLE), ("OpenStack", OPENSTACK_TABLE)):
+        try:
+            out[name] = _count(tbl)
+        except Exception:
+            out[name] = None
+    return out
+
+
+def _table_exists(table):
+    try:
+        _count(table)
+        return True
+    except Exception:
+        return False
+
+
+def _like_fallback(table, cols, phrase, limit, order_by="id",
+                   extra_where="", extra_params=None):
+    """Word-wise LIKE search used when the BM25 index is unavailable.
+
+    Splits the phrase into words and ANDs a LIKE per word, keeping only words
+    that actually occur in the column (so an extra word like 'kernel' doesn't
+    zero out a match on 'instruction cache parity error'). Returns (rows, sql).
+    `extra_where`/`extra_params` append an optional time-range predicate.
+    """
+    extra_params = list(extra_params or [])
+    words = [w for w in re.findall(r"[A-Za-z0-9_.\-]+", phrase.lower())
+             if len(w) > 1]
+    # Keep only words that appear somewhere in the message column.
+    present = []
+    for w in words:
+        try:
+            if _count(table, "LOWER(message) LIKE %s", (f"%{w}%",)) > 0:
+                present.append(w)
+        except Exception:
+            present.append(w)
+    terms = present or words or [phrase.lower()]
+
+    where = "(" + " AND ".join("LOWER(message) LIKE %s" for _ in terms) + ")"
+    params = [f"%{t}%" for t in terms] + extra_params + [limit]
+    sql = (f'SELECT {", ".join(cols)} FROM {table} '
+           f'WHERE {where}{extra_where} ORDER BY {order_by} LIMIT %s')
+    rows = query(sql, params)
+    shown = sql
+    for v in params:
+        shown = shown.replace("%s", repr(v) if isinstance(v, str) else str(v), 1)
+    shown += "   -- [fallback: word-wise LIKE, FTS index unavailable]"
+    return rows, shown
+
+
+# ===========================================================================
+#  ENGINEER TOOLS — full-text search + nearby events
+# ===========================================================================
+def search_bgl_fulltext(phrase, limit=15, start=None, end=None):
+    """TOOL (engineer): full-text BM25 search of BGL messages, with optional
+    time filter.
+
+    Input:  phrase (str), limit (int, default 15),
+            start/end (optional, unix ts or 'YYYY-MM-DD'[ HH:MM:SS]) — restrict
+            to events in [start, end].
+    Output: ranked log lines (alert, ts, node, severity, message, score).
+    Uses SereneDB's inverted index `bgl_idx` and the @@ / ts_phrase operator.
+    """
+    cols = ['id', 'alert', 'ts', 'node', 'event_time AS "datetime"',
+            'severity', 'component', 'message']
+    tw, tp, period = _time_clause("ts", start, end)
+    try:
+        rows, sql = fts.search(BGL_IDX, "message", phrase, cols, limit,
+                               extra_where=tw, extra_params=tp)
+    except Exception:
+        rows, sql = _like_fallback(TABLE, cols, phrase, limit,
+                                   extra_where=tw, extra_params=tp)
+    env = _envelope("search_bgl_fulltext",
+                    f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                    {"phrase": phrase, "start": start, "end": end},
+                    sql, rows, limit)
+    return env
+
+
+def get_nearby_events_bgl(ts, window_seconds=120, limit=20):
+    """TOOL (engineer): events within +/- window_seconds of a Unix timestamp.
+
+    Input:  ts (unix seconds), window_seconds (int), limit (int)
+    Output: chronologically ordered log lines around that moment.
+    """
+    sql = (f'SELECT id, alert, ts, node, event_time AS "datetime", severity, '
+           f'component, message FROM {TABLE} '
+           f'WHERE ts > 0 AND ts BETWEEN %s AND %s ORDER BY ts, id LIMIT %s')
+    rows = query(sql, (ts - window_seconds, ts + window_seconds, limit))
+    return _envelope(
+        "get_nearby_events_bgl",
+        f"BGL ({_count(TABLE):,} lines)",
+        {"ts": ts, "window_seconds": window_seconds},
+        sql, rows, limit)
+
+
+def search_openstack_fulltext(phrase, limit=15, start=None, end=None):
+    """TOOL (engineer): full-text BM25 search of OpenStack messages, with
+    optional time filter (start/end as unix ts or 'YYYY-MM-DD'[ HH:MM:SS])."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("search_openstack_fulltext", OPENSTACK_TABLE)
+    cols = ['id', 'log_time', 'ts', 'level', 'component', 'request_id',
+            'tenant_id', 'latency_ms', 'message']
+    tw, tp, period = _time_clause("ts", start, end)
+    try:
+        rows, sql = fts.search(OPENSTACK_IDX, "message", phrase, cols, limit,
+                               extra_where=tw, extra_params=tp)
+    except Exception:
+        rows, sql = _like_fallback(OPENSTACK_TABLE, cols, phrase, limit,
+                                   extra_where=tw, extra_params=tp)
+    return _envelope("search_openstack_fulltext",
+                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
+                     {"phrase": phrase, "start": start, "end": end},
+                     sql, rows, limit)
+
+
+# ===========================================================================
+#  TEAM LEAD / MANAGER TOOLS — whole-corpus aggregation + ownership + trends
+# ===========================================================================
+def count_bgl_alerts_by_team(limit=20, start=None, end=None):
+    """TOOL (team lead/manager): BGL alert counts grouped by the OWNING TEAM,
+    via the supplied component_owners table.
+
+    Default scope is the WHOLE corpus; pass start/end (unix ts or
+    'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period instead.
+    Output: team, component, events, alert_events.
+    """
+    tw, tp, period = _time_clause("b.ts", start, end)
+    sql = f"""
+        SELECT COALESCE(o.team, 'Unmapped') AS team,
+               b.component,
+               COUNT(*) AS events,
+               SUM(CASE WHEN b.alert <> '-' THEN 1 ELSE 0 END) AS alert_events
+        FROM {TABLE} b
+        LEFT JOIN {OWNERS_TABLE} o
+          ON o.dataset = 'BGL' AND o.component = b.component
+        WHERE 1=1{tw}
+        GROUP BY team, b.component
+        ORDER BY alert_events DESC, events DESC
+        LIMIT {limit}
+    """
+    rows = query(sql, tp or None)
+    return _envelope("count_bgl_alerts_by_team",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"group_by": "team, component", "start": start, "end": end},
+                     sql, rows, limit)
+
+
+def count_bgl_alert_categories(limit=20, start=None, end=None):
+    """TOOL (team lead): BGL alert-category counts (the 12 labelled categories;
+    '-' = normal excluded). Default scope is the WHOLE corpus; pass start/end
+    to count over a stated period."""
+    tw, tp, period = _time_clause("ts", start, end)
+    sql = f"""
+        SELECT alert AS category, COUNT(*) AS n
+        FROM {TABLE}
+        WHERE alert <> '-'{tw}
+        GROUP BY alert
+        ORDER BY n DESC
+        LIMIT {limit}
+    """
+    rows = query(sql, tp or None)
+    return _envelope("count_bgl_alert_categories",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"exclude": "alert = '-' (normal)",
+                      "start": start, "end": end}, sql, rows, limit)
+
+
+def bgl_trend_by_day(category=None, limit=400, start=None, end=None):
+    """TOOL (team lead/manager): BGL alert volume per calendar day.
+
+    Input:  category (optional alert category to filter), limit,
+            start/end (optional period; default = whole corpus).
+    Output: date, alert_events per day (trend).
+    """
+    where = "ts > 0"
+    params = []
+    if category:
+        where += " AND alert = %s"
+        params.append(category)
+    else:
+        where += " AND alert <> '-'"
+    tw, tp, period = _time_clause("ts", start, end)
+    where += tw
+    params += tp
+    sql = f"""
+        SELECT CAST(to_timestamp(ts) AS DATE) AS day,
+               COUNT(*) AS alert_events
+        FROM {TABLE}
+        WHERE {where}
+        GROUP BY day
+        ORDER BY day
+        LIMIT {limit}
+    """
+    rows = query(sql, params or None)
+    return _envelope("bgl_trend_by_day",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"category": category or "any alert",
+                      "start": start, "end": end}, sql, rows, limit)
+
+
+def _missing_table_env(tool, table):
+    return {
+        "tool": tool, "scope": f"{table} (NOT LOADED)", "filters": {},
+        "query": None, "rows": [], "count": 0, "truncated": False,
+        "limit": None, "note": f"Table '{table}' is not loaded; skipped.",
+    }
+
+
+def count_openstack_by_component(start=None, end=None):
+    """TOOL (team lead/manager): OpenStack counts grouped by nova service, with
+    error rate, avg latency and the owning team.
+
+    Default scope is the WHOLE corpus; pass start/end (unix ts or
+    'YYYY-MM-DD'[ HH:MM:SS]) to count over a stated period."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
+    tw, tp, period = _time_clause("os.ts", start, end)
+    sql = f"""
+        SELECT os.component,
+               COALESCE(o.team, 'Unmapped') AS team,
+               COUNT(*) AS total,
+               SUM(os.is_problem) AS problems,
+               ROUND((100.0 * SUM(os.is_problem) / COUNT(*))::NUMERIC, 2) AS problem_pct,
+               ROUND(AVG(os.latency_ms)::NUMERIC, 1) AS avg_latency_ms
+        FROM {OPENSTACK_TABLE} os
+        LEFT JOIN {OWNERS_TABLE} o
+          ON o.dataset = 'OpenStack' AND o.component = os.component
+        WHERE 1=1{tw}
+        GROUP BY os.component, team
+        ORDER BY problems DESC
+    """
+    try:
+        rows = query(sql, tp or None)
+    except Exception:
+        return _missing_table_env("count_openstack_by_component", OPENSTACK_TABLE)
+    return _envelope("count_openstack_by_component",
+                     f"OpenStack ({_count(OPENSTACK_TABLE):,} lines) | period: {period}",
+                     {"group_by": "component (nova service)",
+                      "start": start, "end": end}, sql, rows, None)
+
+
+def openstack_latency_stats():
+    """TOOL (manager/team lead): request latency distribution per nova service
+    over the whole OpenStack corpus (count, avg, p95-ish via max)."""
+    if not _table_exists(OPENSTACK_TABLE):
+        return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
+    sql = f"""
+        SELECT component,
+               COUNT(latency_ms) AS requests,
+               ROUND(AVG(latency_ms)::NUMERIC, 1) AS avg_ms,
+               ROUND(MIN(latency_ms)::NUMERIC, 1) AS min_ms,
+               ROUND(MAX(latency_ms)::NUMERIC, 1) AS max_ms
+        FROM {OPENSTACK_TABLE}
+        WHERE latency_ms IS NOT NULL
+        GROUP BY component
+        ORDER BY avg_ms DESC
+    """
+    try:
+        rows = query(sql)
+    except Exception:
+        return _missing_table_env("openstack_latency_stats", OPENSTACK_TABLE)
+    return _envelope("openstack_latency_stats",
+                     f"OpenStack (whole corpus, {_count(OPENSTACK_TABLE):,} lines)",
+                     {"metric": "latency_ms"}, sql, rows, None)
+
+
+def bgl_alert_profile(limit=8, start=None, end=None):
+    """TOOL (team lead/manager): per BGL alert category, a one-GROUP-BY profile
+    showing SPREAD, not just raw line counts:
+      lines, distinct_nodes, distinct_days, first_seen, last_seen.
+
+    This supports the brief's guidance: matching lines are not incidents, so
+    report affected scope ('N lines on D nodes over K days') rather than
+    treating each line as a separate incident. Default scope is the whole
+    corpus; pass start/end to profile over a stated period."""
+    tw, tp, period = _time_clause("ts", start, end)
+    sql = f"""
+        SELECT alert AS category,
+               COUNT(*) AS lines,
+               COUNT(DISTINCT node) AS distinct_nodes,
+               COUNT(DISTINCT CAST(to_timestamp(ts) AS DATE)) AS distinct_days,
+               CAST(to_timestamp(MIN(ts)) AS DATE) AS first_seen,
+               CAST(to_timestamp(MAX(ts)) AS DATE) AS last_seen
+        FROM {TABLE}
+        WHERE alert <> '-' AND ts > 0{tw}
+        GROUP BY alert
+        ORDER BY lines DESC
+        LIMIT {limit}
+    """
+    rows = query(sql, tp or None)
+    return _envelope("bgl_alert_profile",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"group_by": "alert", "start": start, "end": end},
+                     sql, rows, limit)
+
+
+def bgl_top_nodes_for_alert(category, limit=5, start=None, end=None):
+    """TOOL (engineer/team lead): the nodes with the most lines of a given BGL
+    alert category — so a recommendation can name concrete nodes to inspect
+    first. Returns node + line count, highest first."""
+    tw, tp, period = _time_clause("ts", start, end)
+    sql = f"""
+        SELECT node, COUNT(*) AS lines
+        FROM {TABLE}
+        WHERE alert = %s AND ts > 0{tw}
+        GROUP BY node
+        ORDER BY lines DESC, node
+        LIMIT {limit}
+    """
+    rows = query(sql, [category] + tp)
+    return _envelope("bgl_top_nodes_for_alert",
+                     f"BGL ({_count(TABLE):,} lines) | period: {period}",
+                     {"category": category, "start": start, "end": end},
+                     sql, rows, limit)
+
+
+def bgl_component_for_alert(category):
+    """Map a BGL alert category to its owning COMPONENT.
+
+    BGL alert prefixes encode the component: KERN* -> KERNEL, APP* -> APP,
+    LINK* -> LINKCARD, DISC* -> DISCOVERY, MON* -> MONITOR, etc. This lets us
+    route an alert category to the right team instead of guessing."""
+    if not category:
+        return None
+    c = category.upper()
+    prefix_map = {
+        "KERN": "KERNEL", "APP": "APP", "LINK": "LINKCARD",
+        "DISC": "DISCOVERY", "MON": "MONITOR", "MMCS": "MMCS",
+        "BGL": "BGLMASTER", "CMCS": "CMCS", "HARD": "HARDWARE",
+    }
+    for pre, comp in prefix_map.items():
+        if c.startswith(pre):
+            return comp
+    return None
+
+
+def team_for_bgl_alert(category):
+    """Return the owning team for a BGL alert category via its component and the
+    component_owners table. Falls back to 'the owning team' if unknown."""
+    comp = bgl_component_for_alert(category)
+    if not comp:
+        return "the owning team"
+    try:
+        team = scalar(
+            f"SELECT team FROM {OWNERS_TABLE} "
+            "WHERE dataset = 'BGL' AND component = %s", (comp,))
+        return team or "the owning team"
+    except Exception:
+        return "the owning team"
+
+
+def team_ownership():
+    """TOOL (any role): return the supplied component -> team ownership table."""
+    sql = f"SELECT dataset, component, team, on_call FROM {OWNERS_TABLE} ORDER BY dataset, component"
+    rows = query(sql)
+    return _envelope("team_ownership", OWNERS_TABLE, {}, sql, rows, None)
+
+
+# ===========================================================================
+#  Self-test (requires a loaded DB)
+# ===========================================================================
 if __name__ == "__main__":
-    print("\n=== TOOL 7: Systems loaded ===")
-    print(" ", list_systems())
+    print("Corpus scope:", corpus_scope())
 
-    print("\n=== TOOL 8: Problems by system ===")
-    for r in problems_by_system():
-        print(f"  {r['system']:<12} {r['problems']:>5}/{r['total']:<5} {r['pct']:>5}%")
+    print("\n[search_bgl_fulltext 'kernel panic']")
+    r = search_bgl_fulltext("kernel", limit=3)
+    print("  query:", r["query"][:120])
+    for row in r["rows"][:3]:
+        print("   ", {k: row[k] for k in list(row)[:4]})
 
-    print("\n=== TOOL 9: Search 'failed password' in OpenSSH ===")
-    for r in search_all("failed password", system="OpenSSH", limit=3):
-        print(f"  [{r['system']}] {r['content'][:90]}")
+    print("\n[count_bgl_alert_categories]")
+    for row in count_bgl_alert_categories(limit=5)["rows"]:
+        print("   ", row)
 
-    print("\n=== TOOL 11: Hadoop summary ===")
-    s = system_summary("Hadoop")
-    print(f"  {s['problems']}/{s['total']} problems ({s['pct']}%), levels {s['levels']}")
-    for e in s["top_problem_events"][:3]:
-        print(f"  {e['n']:>4}x  {e['event_template'][:80]}")
+    print("\n[count_openstack_by_component]")
+    for row in count_openstack_by_component()["rows"]:
+        print("   ", row)
 
-    print("\n=== TOOL 1: Search for 'error' ===")
-    for r in search_logs("error", limit=5):
-        print(f"  [{r['severity']}] {r['node']} — {r['message'][:80]}")
-
-    print("\n=== TOOL 3: Count by severity ===")
-    for k, v in count_by_severity().items():
-        print(f"  {k}: {v}")
-
-    print("\n=== TOOL 4: Alert types ===")
-    for k, v in count_alerts().items():
-        print(f"  {k}: {v}")
-
-    print("\n=== TOOL 5: Top failing nodes ===")
-    for k, v in top_failing_nodes().items():
-        print(f"  {k}: {v}")
-
-    print("\n=== TOOL 6: Risk summary (Manager view) ===")
-    s = risk_summary()
-    print(f"  Total: {s['total_events']}")
-    print(f"  Anomalies: {s['anomaly_count']} ({s['anomaly_percent']}%)")
-    print(f"  Top alert types: {s['top_alert_types']}")
-    print(f"  Top risk nodes: {s['top_risk_nodes']}")
-    print("\n  Recommended actions:")
-    for a in s["recommended_actions"]:
-        print(f"    {a}")
+    print("\n[team_ownership]")
+    for row in team_ownership()["rows"][:4]:
+        print("   ", row)
