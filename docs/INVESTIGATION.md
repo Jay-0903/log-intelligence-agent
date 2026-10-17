@@ -269,23 +269,35 @@ happened just before and after the most recent one?"
 **Scope (restated by Claude from the tools):** BGL still 4,747,963 lines;
 KERNRTSP = **3,983 lines on 3,394 nodes over 126 days (2005-06-05 → 2006-01-03)**.
 
-### Tool call 1 — full-text search `search_logs_fulltext(dataset="bgl", phrase="rts panic", limit=5)`
+> The blocks below are the **verbatim tool output** from a full-corpus run
+> (BGL = 4,747,963 lines). Every row and the rendered SQL are copied from the
+> tool's `query`/`rows` fields — nothing is hand-written.
+
+### Tool call 1 — `search_logs_fulltext(dataset="bgl", phrase="rts panic", start="2006-01-03", end="2006-01-04", limit=5)`
+
+Scope: `BGL (4,747,963 lines) | period: from 1136246400 to 1136332800`.
+Method: **LIKE fallback** — on this run the BM25 index was unavailable
+(`fallback_reason: FTS query failed: Invalid unicode (byte sequence mismatch)
+detected in value construction`), so the tool degraded to word-wise LIKE and
+**still returned the exact panic line**. (The FTS-index issue on the full corpus
+is a known limitation — see "Known limitations" at the end.)
+
+Query that ran (rendered, as returned by the tool):
 ```sql
-SELECT id, alert, ts, node, event_time AS "datetime", severity, component,
-       message, ROUND(BM25(bgl_idx.tableoid)::NUMERIC, 3) AS score
-FROM bgl_idx
-WHERE (message @@ ts_phrase('rts') OR message @@ ts_phrase('panic'))
-ORDER BY score DESC LIMIT 5;
+SELECT id, alert, ts, node, event_time AS "datetime", severity, component, message
+FROM bgl_logs
+WHERE (LOWER(message) LIKE '%rts%' AND LOWER(message) LIKE '%panic%')
+  AND ts >= 1136246400 AND ts <= 1136332800
+ORDER BY id LIMIT 5;   -- [fallback: word-wise LIKE, FTS index unavailable]
 ```
-Result (BM25-ranked; all hits are `KERNRTSP ... rts panic! - stopping execution`):
+Result (count: 1):
 ```
-alert     node                  severity  message                              score
-KERNRTSP  R27-M0-NA-C:J11-U11   FATAL     rts panic! - stopping execution      4.1x
-KERNRTSP  R26-M0-NB-C:J09-U11   FATAL     rts panic! - stopping execution      4.0x
-KERNRTSP  R26-M0-NB-C:J15-U11   FATAL     rts panic! - stopping execution      4.0x
+id        alert     ts          node                 datetime                    severity  message
+4746673   KERNRTSP  1136287505  R27-M0-NA-C:J11-U11  2006-01-03-03.25.05.504039  FATAL     rts panic! - stopping execution
 ```
 
 ### Tool call 2 — `top_nodes_for_alert(category="KERNRTSP", limit=5)`
+Scope: `BGL (4,747,963 lines) | whole corpus`. (count: 5, truncated — more exist)
 ```sql
 SELECT node, COUNT(*) AS lines FROM bgl_logs
 WHERE alert = 'KERNRTSP' AND ts > 0
@@ -301,15 +313,31 @@ R71-M0-N4-C:J14-U01        8
 R07-M0-NE-C:J17-U01        7
 ```
 
-### Tool call 3 — `get_nearby_events(ts=<03:25:05 hit>, window_seconds=60, node="R27-M0-NA-C:J11-U11")`
+### Tool call 3 — `get_nearby_events(ts=1136287505, window_seconds=60, node="R27-M0-NA-C:J11-U11")`
+Scope: `BGL (4,747,963 lines)`. (count: 8, truncated — window held more)
 ```sql
 SELECT id, alert, ts, node, event_time AS "datetime", severity, component, message
 FROM bgl_logs
-WHERE ts > 0 AND ts BETWEEN %s AND %s AND node = 'R27-M0-NA-C:J11-U11'
+WHERE ts > 0 AND ts BETWEEN 1136287445 AND 1136287565
+  AND node = 'R27-M0-NA-C:J11-U11'
 ORDER BY ts, id LIMIT 8;
 ```
-Result is the verbatim KERNMC → rts panic sequence shown under "The most recent
-one" below (node-scoped so a wide window doesn't mix in unrelated nodes).
+Result (verbatim — the machine-check cascade that precedes the panic):
+```
+ts          datetime                    alert     message
+1136287486  2006-01-03-03.24.46.844512  KERNMC    machine check interrupt (bit=0x1d): L2 dcache unit write data parity error
+1136287486  2006-01-03-03.24.46.963349  -         instruction address: 0x00205154
+1136287487  2006-01-03-03.24.47.158761  -         Machine Check Status Register: 0x91800000
+1136287487  2006-01-03-03.24.47.299458  -         machine check summary.............1
+1136287487  2006-01-03-03.24.47.428756  -         instruction plb error.............0
+1136287487  2006-01-03-03.24.47.558691  -         data read plb error...............0
+1136287487  2006-01-03-03.24.47.688197  -         data write plb error..............1
+1136287487  2006-01-03-03.24.47.822137  -         tlb error.........................0
+```
+(All lines are `KERNEL FATAL` on node `R27-M0-NA-C:J11-U11`. The window is
+node-scoped so a wide window doesn't mix in unrelated nodes. The `rts panic`
+itself — id 4746673, 03:25:05 — is the Tool-call-1 hit; it follows this
+machine-check dump ~19 s later.)
 
 ### Which nodes (observed)
 Nearly every affected node has only **1–3 panics** — this hits the whole fleet,
@@ -344,17 +372,23 @@ within the same second):
 ### The most recent one: 2006-01-03 03:25:05 on R27-M0-NA-C:J11-U11
 
 **Before** — the whole cluster logged nothing from 02:24 to 03:24 (no warning).
-Then, on the same node (verbatim):
+Then, on the same node, the machine-check cascade began (verbatim, from Tool
+call 3 above — first 8 lines of the window):
 ```
-03:24:46.844  R27-M0-NA-C:J11-U11  KERNMC  FATAL  machine check interrupt (bit=0x1d): L2 dcache unit write data parity error
-03:24:47.688  ...                         FATAL  data write plb error..............1
-03:24:48.222  ...                         FATAL  d-cache flush parity error........1
-03:24:51.398  ...                         FATAL  problem state (0=sup,1=usr).......1   <- user job was running
-   ... ~130 more lines: registers, FPSCR, fpr0-fpr31 ...
-03:25:05.504  R27-M0-NA-C:J11-U11  KERNRTSP FATAL  rts panic! - stopping execution
+03:24:46.844  KERNMC  machine check interrupt (bit=0x1d): L2 dcache unit write data parity error
+03:24:46.963  -       instruction address: 0x00205154
+03:24:47.158  -       Machine Check Status Register: 0x91800000
+03:24:47.299  -       machine check summary.............1
+03:24:47.428  -       instruction plb error.............0
+03:24:47.558  -       data read plb error...............0
+03:24:47.688  -       data write plb error..............1
+03:24:47.822  -       tlb error.........................0
+   ... the dump continues (registers, FPSCR, fpr0-fpr31) ...
+03:25:05.504  KERNRTSP  rts panic! - stopping execution   (id 4746673, Tool call 1)
 ```
-An uncorrectable L2 data-cache parity error hit while a user job was running; the
-kernel spent ~19 seconds dumping its state, then panicked.
+An uncorrectable L2 data-cache parity error (`bit=0x1d`, `data write plb
+error....1`) hit while a job was running; the kernel dumped its state for ~19
+seconds, then panicked at 03:25:05.504.
 
 **After** — within a second, I/O nodes in racks **R20, R22, R24, R25, R26, R27**
 all lost their links to the same front-end (verbatim):
@@ -452,3 +486,23 @@ ownership**.
 
 Same tools, same data — different questions, different evidence, different
 next steps.
+
+---
+
+## Known limitations
+
+- **Full-corpus BM25 index.** On the 2k sample, full-text search runs on
+  SereneDB's BM25 inverted index (`message @@ ts_phrase(...)`). On the **full
+  4.7M-line BGL load via the bulk `read_csv` path**, the BM25 query currently
+  fails with `Invalid unicode (byte sequence mismatch) detected in value
+  construction`, even from a pure-ASCII input file — so it is not an input-byte
+  problem. The search tool **degrades gracefully to word-wise LIKE** and still
+  returns the correct lines (see Tool call 1 above), clearly flagging
+  `method: "LIKE fallback"` and the `fallback_reason`. Root-cause debugging (is
+  it the bulk `regexp_extract` field construction vs. the client-parse path?) is
+  in progress; the aggregation tools, which don't use the index, are unaffected.
+- **OpenStack labelled anomalies** (`anomaly_labels.txt`) are not inline in the
+  raw logs, so OpenStack "error" figures are ERROR/CRITICAL-level or
+  error-keyword matches, not the dataset's ground-truth anomalies.
+- All counts are matching log lines, not de-duplicated incidents; the logs do
+  not establish financial loss, downtime or customer impact.
