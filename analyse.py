@@ -36,7 +36,7 @@ print(f"Total parsed log lines: {len(alerts):,}")
 print(f"Normal (alert '-'):     {alerts.count('-'):,}")
 print(f"Labelled alerts:        {len(alerts) - alerts.count('-'):,}")
 
-print("\nAlert categories (top 12):")
+print("\nAlert categories (top 12 by volume; the full corpus has 41):")
 for k, v in Counter(a for a in alerts if a != "-").most_common(12):
     print(f"  {k:<12} {v}")
 

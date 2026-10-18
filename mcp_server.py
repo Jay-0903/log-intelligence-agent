@@ -79,7 +79,7 @@ def search_logs_fulltext(dataset: str, phrase: str, limit: int = 15,
 
     Inputs:
       dataset: "bgl" or "openstack"
-      phrase:  words/phrase to search for (e.g. "kernel instruction cache parity")
+      phrase:  words/phrase to search for (e.g. "rts panic")
       limit:   max rows to return (default 15; results are ranked, truncation flagged)
       start/end: optional time filter — unix seconds or 'YYYY-MM-DD'[ HH:MM:SS].
                  Restrict the search to events in that window.
