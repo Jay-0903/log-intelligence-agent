@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log Intelligence Agent — SereneDB</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --ink:#e6edf3; --mut:#8b949e;
+    --accent:#58a6ff; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --line:#30363d; --code:#79c0ff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#010409;color:var(--ink);
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  .deck{height:100vh;overflow:hidden}
+  .slide{
+    height:100vh;width:100vw;padding:5vh 7vw;display:none;flex-direction:column;
+    justify-content:center;scroll-snap-align:start;position:relative;
+    background:radial-gradient(1200px 600px at 80% -10%, #11213b 0%, var(--bg) 55%);
+  }
+  .slide.active{display:flex}
+  h1{font-size:3.1rem;line-height:1.08;margin:0 0 .4rem;font-weight:800}
+  h2{font-size:2.1rem;margin:0 0 1.2rem;font-weight:700;color:#fff}
+  h2 .k{color:var(--accent)}
+  .sub{color:var(--mut);font-size:1.15rem;margin-bottom:1.6rem}
+  ul{font-size:1.3rem;line-height:1.65;margin:.3rem 0;padding-left:1.3rem}
+  li{margin:.35rem 0}
+  .pill{display:inline-block;background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:.25rem .8rem;font-size:.95rem;color:var(--mut);margin:.2rem .3rem .2rem 0}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--code)}
+  .big{font-size:4.4rem;font-weight:800;color:#fff;line-height:1}
+  .big .u{color:var(--accent)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:1.4rem;margin-top:.6rem}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.1rem 1.3rem}
+  .card h3{margin:.1rem 0 .5rem;font-size:1.15rem;color:#fff}
+  .card p,.card li{font-size:1.02rem;color:var(--ink)}
+  .role{color:var(--accent);font-weight:700}
+  table{border-collapse:collapse;width:100%;font-size:1.02rem;margin-top:.5rem}
+  th,td{text-align:left;padding:.4rem .7rem;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .hl{color:var(--warn);font-weight:700}
+  .burst{color:var(--bad);font-weight:700}
+  .ok{color:var(--good)}
+  .foot{position:absolute;bottom:2.5vh;left:7vw;right:7vw;display:flex;
+    justify-content:space-between;color:var(--mut);font-size:.9rem;border-top:1px solid var(--line);padding-top:.6rem}
+  .evi{background:#0b1626;border-left:3px solid var(--accent);padding:.8rem 1rem;
+    border-radius:0 8px 8px 0;font-family:ui-monospace,monospace;font-size:.95rem;color:#c9d1d9;white-space:pre-wrap;margin-top:.6rem}
+  .tag{font-size:.85rem;color:var(--mut)}
+  .center{align-items:center;text-align:center}
+  .hint{position:fixed;bottom:10px;right:14px;color:#30363d;font-size:.8rem}
+  @media print{
+    @page{size:1280px 720px;margin:0}
+    html,body{height:auto}
+    .slide{display:flex!important;height:720px;width:1280px;page-break-after:always;
+      background:var(--bg)}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- 1 TITLE -->
+  <section class="slide active center">
+    <h1>Log Intelligence Agent</h1>
+    <div class="sub">The right insights for the right people &nbsp;·&nbsp; SchubKI National AI Hackathon 2026 · SereneDB</div>
+    <div>
+      <span class="pill">BGL — 4,747,963 lines</span>
+      <span class="pill">OpenStack — 207,820 lines</span>
+      <span class="pill">16 MCP tools · Claude-driven</span>
+    </div>
+    <p style="font-size:1.25rem;margin-top:1.6rem;max-width:60ch">
+      One workflow → three roles: <span class="role">Engineer · Team Lead · Manager</span>.
+      <br>Headline: the <b>loudest</b> alert is misleading — <b>what's loud ≠ what recurs</b>.
+    </p>
+    <div class="foot"><span>Log Intelligence Agent</span><span>SereneDB · Making Sense of Logs</span></div>
+  </section>
+
+  <!-- 2 PROBLEM -->
+  <section class="slide">
+    <h2>The problem</h2>
+    <ul>
+      <li>Millions of log lines <b>don't fit in a prompt</b>.</li>
+      <li>An agent can <i>explain</i> a failure — but it needs <b>focused evidence</b>, not raw logs.</li>
+      <li>Three people ask about the <b>same logs</b> and need <b>different</b> evidence and decisions:</li>
+    </ul>
+    <div class="grid" style="margin-top:1rem">
+      <div class="card"><h3 class="role">Engineer</h3><p>What failed, where, and what happened just before &amp; after?</p></div>
+      <div class="card"><h3 class="role">Team Lead</h3><p>What recurs, how often, which teams own it?</p></div>
+      <div class="card"><h3 class="role">Manager</h3><p>What to prioritise first — and why?</p></div>
+      <div class="card"><h3 class="role">Any</h3><p>Every answer must cite the query that produced it.</p></div>
+    </div>
+    <div class="foot"><span>2</span><span>The problem</span></div>
+  </section>
+
+  <!-- 3 APPROACH -->
+  <section class="slide">
+    <h2>The approach — <span class="k">the database does the work</span></h2>
+    <ul>
+      <li><b>SereneDB</b> searches (BM25 full-text) and aggregates (counts, trends, latency) <i>before</i> anything reaches the agent.</li>
+      <li>The agent picks <b>parameterised tools</b> — no open-ended SQL.</li>
+      <li><b>Every number is checkable</b>: each tool returns the SQL, filters, data scope, row count and a truncation flag.</li>
+      <li>Facts vs. hypotheses kept separate; the manager view uses <b>measured frequency only</b> — no invented impact.</li>
+    </ul>
+    <div class="evi">question → [agent picks a tool] → SereneDB query → evidence → role-specific answer</div>
+    <div class="foot"><span>3</span><span>Approach</span></div>
+  </section>
+
+  <!-- 4 TOOLS -->
+  <section class="slide">
+    <h2>16 parameterised tools, exposed over <span class="k">MCP</span></h2>
+    <div class="grid">
+      <div class="card"><h3 class="role">Engineer</h3>
+        <code>search_logs_fulltext</code> (BM25 + time filter) ·
+        <code>get_nearby_events</code> · <code>request_trace</code></div>
+      <div class="card"><h3 class="role">Team Lead</h3>
+        <code>alert_profile</code> · <code>count_alerts_by_team</code> ·
+        <code>trend_by_day</code> / <code>trend_by_week</code></div>
+      <div class="card"><h3 class="role">Manager</h3>
+        <code>openstack_by_component</code> · <code>latency_stats</code> ·
+        <code>top_nodes_for_alert</code></div>
+      <div class="card"><h3 class="role">Any / scale</h3>
+        <code>corpus_scope</code> · <code>team_ownership</code> ·
+        <code>alert_categories</code> · <code>otel_*</code> (remote Parquet)</div>
+    </div>
+    <p class="tag" style="margin-top:1rem">Full-text uses SereneDB's inverted index: <code>@@ ts_phrase(...)</code> ranked by <code>BM25(idx.tableoid)</code>. The ownership table maps components → teams. Claude connects over MCP and selects the tools itself.</p>
+    <div class="foot"><span>4</span><span>Tools</span></div>
+  </section>
+
+  <!-- 5 ENGINEER -->
+  <section class="slide">
+    <h2><span class="role">Engineer</span> — investigate the alert the team flagged</h2>
+    <div class="sub">Claude chose: <code>search_logs_fulltext("rts panic")</code> → <code>top_nodes_for_alert</code> → <code>get_nearby_events</code> (node-scoped)</div>
+    <ul>
+      <li>Nearly every node has only <b>1–3 panics</b> → whole-fleet, not a few bad chips. Outlier: <code>R63-M0-NE-C:J12-U01</code>.</li>
+      <li>Traced the latest panic on <code>R27-M0-NA-C:J11-U11</code> (2006-01-03) — a tight ~20s chain:</li>
+    </ul>
+    <div class="evi">03:24:46  KERNMC   machine check interrupt (bit=0x1d): L2 dcache write data parity error
+   …~130 register-dump lines over ~19s…
+03:25:05  KERNRTSP rts panic! - stopping execution        (id 4746673, BM25 score 8.382)
+03:25:06+ APPSEV   ciod: … Link has been severed   → I/O nodes R20–R27 → 172.16.96.116</div>
+    <p style="margin-top:.8rem"><b>Hypothesis (not fact):</b> an uncorrectable cache fault <i>likely</i> took down a multi-rack job — <i>consistent with</i> the chain. Logs show the sequence, <b>not</b> causation.</p>
+    <div class="foot"><span>5</span><span>Engineer · live</span></div>
+  </section>
+
+  <!-- 6 TEAM LEAD / INSIGHT -->
+  <section class="slide">
+    <h2><span class="role">Team Lead</span> — what's loud ≠ what recurs</h2>
+    <table>
+      <tr><th>Alert</th><th class="num">Lines</th><th class="num">Nodes</th><th class="num">Days</th><th>Read</th></tr>
+      <tr><td>KERNDTLB</td><td class="num">152,734</td><td class="num">541</td><td class="num">10</td><td class="burst">BURST — 99.6% on one day (2005-06-12)</td></tr>
+      <tr><td>KERNSTOR</td><td class="num">63,491</td><td class="num">22,529</td><td class="num">4</td><td class="burst">BURST — 100% on 2005-06-14</td></tr>
+      <tr><td>APPSEV</td><td class="num">49,651</td><td class="num">1,024</td><td class="num">70</td><td class="ok">sustained</td></tr>
+      <tr><td class="hl">KERNRTSP</td><td class="num">3,983</td><td class="num">3,394</td><td class="num hl">126</td><td class="ok">sustained — still active 2006-01-03</td></tr>
+      <tr><td class="hl">KERNMC</td><td class="num">342</td><td class="num">265</td><td class="num hl">144</td><td class="ok">most persistent of all 41 categories</td></tr>
+    </table>
+    <p style="margin-top:1rem"><b>Insight:</b> KERNDTLB is loudest by volume but 99.6% is a single day — a burst, not a defect. Ranked by <b>spread</b> (distinct days), the real recurring problems are <b>KERNMC (144d)</b> and <b>KERNRTSP (126d)</b>, both owned by Kernel Platform.</p>
+    <div class="foot"><span>6</span><span>Team Lead · the key insight</span></div>
+  </section>
+
+  <!-- 7 MANAGER -->
+  <section class="slide">
+    <h2><span class="role">Manager</span> — prioritise by spread + ownership</h2>
+    <ul>
+      <li><b>1.</b> Kernel Platform, long-running: <b>KERNMC (144d) + KERNRTSP (126d) + KERNMNTF (26d)</b> → kernel-oncall.</li>
+      <li><b>2.</b> Application Runtime: <b>APPSEV</b> — 49,651 lines, 70 days, 1,024 distinct nodes → apprt-oncall.</li>
+      <li><b>3.</b> OpenStack <b>nova-api</b> — 2,068 error-keyword lines (<b>2.01%</b>) → API Gateway.</li>
+      <li><b>4.</b> Bursts as retrospectives: <b>KERNDTLB</b> (99.6% on 2005-06-12); <b>KERNSTOR</b> peaks the same day as KERNRTSP's burst.</li>
+      <li><b>5.</b> Monitor only: nova-compute (0.20%), nova-scheduler (0 of 866).</li>
+    </ul>
+    <p class="tag" style="margin-top:.9rem"><b>Honest framing:</b> BGL uses the dataset's labels; OpenStack "error" = ERROR/CRITICAL level or error keywords, <b>not</b> labelled anomalies. Ranked within each dataset — counts are matching log lines, not confirmed incidents. No invented downtime / cost / customer impact.</p>
+    <div class="foot"><span>7</span><span>Manager · measured frequency only</span></div>
+  </section>
+
+  <!-- 8 SHOWS ITS WORK -->
+  <section class="slide">
+    <h2>Shows its work · runs from a clean checkout</h2>
+    <ul>
+      <li>Every answer prints <code>[scope: …]</code> and <code>[query: …]</code>; facts vs. hypotheses labelled.</li>
+      <li>Full-text verified on the full corpus: <code>message @@ ts_phrase(...)</code> ranked by <code>BM25(idx.tableoid)</code> (score 8.382) — client-side binding via <code>ClientCursor</code>.</li>
+      <li>SQL cross-checked against the SereneDB docs MCP (FTS, index refresh, <code>read_parquet</code>, <code>date_trunc</code>).</li>
+      <li>Setup: Docker SereneDB → loader (BGL + OpenStack, ~2 min) → <code>agent.py</code> / <code>mcp_server.py</code>.</li>
+    </ul>
+    <div class="evi">[scope: BGL (4,747,963 lines) | period: whole corpus]
+[query: SELECT … FROM bgl_idx WHERE (message @@ ts_phrase('rts') OR message @@ ts_phrase('panic')) …]</div>
+    <div class="foot"><span>8</span><span>Rigor &amp; reproducibility</span></div>
+  </section>
+
+  <!-- 9 SCALE -->
+  <section class="slide">
+    <h2>It scales — and we state the limits</h2>
+    <ul>
+      <li>Optional award: <b class="big" style="font-size:2rem">1,000,000,000 rows</b> of remote OpenTelemetry Parquet, queried <b>in place, zero download</b> (<code>read_parquet</code> over S3).</li>
+      <li><code>COUNT(*)</code> 0.1s · <code>GROUP BY service</code> ~15s · <code>GROUP BY severity</code> ~12s.</li>
+      <li>Honest limit: aggregation over remote Parquet scales freely; a full-text index on 1B rows needs more RAM than 6 GiB.</li>
+    </ul>
+    <div class="foot"><span>9</span><span>Huge datasets (optional award)</span></div>
+  </section>
+
+  <!-- 10 CLOSE -->
+  <section class="slide center">
+    <h2 style="margin-bottom:.6rem">question → evidence → recommendation</h2>
+    <p class="big"><span class="u">per role</span>, every number checkable</p>
+    <p style="font-size:1.2rem;color:var(--mut);margin-top:1.6rem;max-width:62ch">
+      Same corpus, three roles, distinct evidence. Real BM25 full-text + whole-corpus
+      aggregation on BGL + OpenStack. The agent selects the tools; the database proves the numbers.
+    </p>
+    <div style="margin-top:1.4rem">
+      <span class="pill">KERNMC 144d · KERNRTSP 126d</span>
+      <span class="pill">KERNDTLB 99.6% one day</span>
+      <span class="pill">nova-api 2.01%</span>
+      <span class="pill">1B rows, zero download</span>
+    </div>
+    <div class="foot"><span>10</span><span>Thank you</span></div>
+  </section>
+
+</div>
+
+<div class="hint">← → / Space to navigate · P to print-to-PDF</div>
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  let i=0;
+  function show(n){i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));}
+  document.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){show(i+1);e.preventDefault();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){show(i-1);}
+    else if(e.key==='Home'){show(0);} else if(e.key==='End'){show(slides.length-1);}
+    else if(e.key.toLowerCase()==='p'){window.print();}
+  });
+  document.addEventListener('click',e=>{ if(!e.target.closest('a')) show(i+1); });
+</script>
+</body>
+</html>
