@@ -341,7 +341,7 @@ def dispatch(role, question):
 
 
 DEMO = [
-    ("ENGINEER",  "engineer: kernel instruction cache parity error"),
+    ("ENGINEER",  "engineer: rts panic"),
     ("TEAM LEAD", "teamlead: what alert patterns recur and which teams own them?"),
     ("MANAGER",   "manager: what should we prioritize?"),
 ]

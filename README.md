@@ -144,7 +144,7 @@ ownership table, then builds BM25 inverted indexes and runs
 load time** for each step.
 
 > Windows / PowerShell: paths use backslashes, e.g.
-> `python load_logs.py --bgl .\data\BGL\BGL.log --openstack .\data\OpenStack`
+> `python load_logs.py --bgl .\data\BGL.log --openstack .\data\openstack`
 
 **About the ownership table:** the brief references a component → team mapping,
 but **no table was supplied by the organisers**, so we define our own in
@@ -209,12 +209,12 @@ then `get_nearby_events`.
 **Verify the MCP connection (quick check):**
 
 1. Restart Claude Desktop / Claude Code after editing the config.
-2. Confirm the `log-intelligence` server appears and lists **14 tools**
-   (`corpus_scope`, `team_ownership`, `search_logs_fulltext`,
+2. Confirm the `log-intelligence` server appears and lists **16 tools** — 13
+   core (`corpus_scope`, `team_ownership`, `search_logs_fulltext`,
    `get_nearby_events`, `request_trace`, `alert_categories`, `alert_profile`,
    `top_nodes_for_alert`, `count_alerts_by_team`, `trend_by_day`,
-   `trend_by_week`, `openstack_by_component`, `latency_stats`, plus the optional
-   `otel_*` tools).
+   `trend_by_week`, `openstack_by_component`, `latency_stats`) plus 3 optional
+   huge-datasets tools (`otel_setup`, `otel_aggregate`, `otel_search`).
 3. Ask: *"Call corpus_scope"* — you should get BGL/OpenStack line counts back.
 4. Then run one question per role (see `docs/DEMO.md`).
 
